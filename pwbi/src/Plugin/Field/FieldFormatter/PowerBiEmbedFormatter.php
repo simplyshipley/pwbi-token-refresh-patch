@@ -6,6 +6,7 @@ namespace Drupal\pwbi\Plugin\Field\FieldFormatter;
 
 use Drupal\breakpoint\BreakpointManager;
 use Drupal\Component\Datetime\TimeInterface;
+use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Datetime\DrupalDateTime;
 use Drupal\Core\Field\FieldDefinitionInterface;
 use Drupal\Core\Field\FieldItemListInterface;
@@ -44,12 +45,13 @@ class PowerBiEmbedFormatter extends FormatterBase {
     protected BreakpointManager $breakpointManager,
     protected EventDispatcherInterface $dispatcher,
     protected TimeInterface $time,
+    protected readonly ConfigFactoryInterface $configFactory,
   ) {
     parent::__construct($plugin_id, $plugin_definition, $field_definition, $settings, $label, $view_mode, $third_party_settings);
   }
 
   /**
-   * {@inheritDoc}
+   * {@inheritdoc}
    */
   public static function create(ContainerInterface $container, array $configuration, $plugin_id, $plugin_definition): static {
     // @phpstan-ignore-next-line
@@ -65,6 +67,7 @@ class PowerBiEmbedFormatter extends FormatterBase {
       $container->get('breakpoint.manager'),
       $container->get('event_dispatcher'),
       $container->get('datetime.time'),
+      $container->get('config.factory'),
     );
   }
 
@@ -186,11 +189,22 @@ class PowerBiEmbedFormatter extends FormatterBase {
     $embed_options['settings']['layoutType'] = (int) $item->getValue()['report_layout'];
     $embed_options['settings']['localeSettings'] = $this->getPowerBiLangcode($langcode);
     $embed_options['tokenType'] = (int) ($embed_options['tokenType'] === 'Embed');
+
+    // Pass workspaceId so the JS refresh call can address the right workspace.
+    $embed_options['workspaceId'] = $item->getValue()['workspace_id'];
+
     foreach ($embed_options as $key => $embedOption) {
       if (empty($embedOption)) {
         unset($embed_options[$key]);
       }
     }
+
+    // Set token refresh config after the empty() cleanup loop since empty(FALSE)
+    // and empty(0) are truthy and would strip these values if set beforehand.
+    $pwbi_settings = $this->configFactory->get('pwbi.settings');
+    $embed_options['token_refresh_enabled'] = (bool) ($pwbi_settings->get('token_refresh_enabled') ?? FALSE);
+    $embed_options['token_refresh_minutes'] = (int) ($pwbi_settings->get('token_refresh_minutes') ?? 10);
+
     return $embed_options;
   }
 

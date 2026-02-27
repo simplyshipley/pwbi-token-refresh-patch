@@ -21,3 +21,13 @@ pwbi.embed_settings:
     _title: 'PowerBi Embed Settings'
   requirements:
     _permission: 'configure pwbi'
+
+pwbi.token_refresh:
+  path: '/pwbi/token-refresh/{workspace_id}/{report_id}'
+  defaults:
+    _controller: '\Drupal\pwbi\Controller\PwbiTokenRefreshController::refresh'
+    _title: 'Power BI token refresh'
+  requirements:
+    _permission: 'access content'
+    workspace_id: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+    report_id: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'

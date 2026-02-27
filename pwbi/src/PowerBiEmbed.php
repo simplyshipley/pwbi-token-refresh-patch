@@ -89,6 +89,7 @@ class PowerBiEmbed implements ContainerInjectionInterface {
       'embedUrl' => $reportInfo['embedUrl'],
       'accessToken' => $embedToken['token'],
       'tokenExpirationDate' => $embedToken['expiration'],
+      'datasetId' => $reportInfo['datasetId'],
     ];
   }
 

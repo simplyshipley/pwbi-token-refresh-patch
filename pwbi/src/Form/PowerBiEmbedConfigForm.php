@@ -77,7 +77,37 @@ class PowerBiEmbedConfigForm extends ConfigFormBase {
       '#description' => $this->t('Select the Power BI REST API root for your tenant cloud environment.'),
     ];
 
+    $form['token_refresh_enabled'] = [
+      '#type' => 'checkbox',
+      '#title' => $this->t('Enable automatic embed token refresh'),
+      '#default_value' => $pwbi_settings->get('token_refresh_enabled') ?? FALSE,
+      '#description' => $this->t('Silently renew embed tokens before they expire, preserving all user state.'),
+    ];
+
+    $form['token_refresh_minutes'] = [
+      '#type' => 'number',
+      '#title' => $this->t('Minutes before expiry to refresh'),
+      '#default_value' => $pwbi_settings->get('token_refresh_minutes') ?? 10,
+      '#min' => 1,
+      '#max' => 55,
+      '#description' => $this->t('Request a new token this many minutes before the current one expires.'),
+      '#states' => [
+        'visible' => [':input[name="token_refresh_enabled"]' => ['checked' => TRUE]],
+      ],
+    ];
+
     return $form;
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function validateForm(array &$form, FormStateInterface $form_state): void {
+    $minutes = (int) $form_state->getValue('token_refresh_minutes');
+    if ($minutes < 1 || $minutes > 55) {
+      $form_state->setErrorByName('token_refresh_minutes', $this->t('Minutes must be between 1 and 55.'));
+    }
+    parent::validateForm($form, $form_state);
   }
 
   /**
@@ -88,9 +118,11 @@ class PowerBiEmbedConfigForm extends ConfigFormBase {
     $settings = ['pwbi_workspaces' => $form_state->getValue('pwbi_workspaces')];
     $this->pwbiEmbed->setEmbedConfiguration($settings);
 
-    // Save API endpoint to Config API.
+    // New: save API settings to Config API.
     $this->config('pwbi.settings')
       ->set('pwbi_api_endpoint', $form_state->getValue('pwbi_api_endpoint'))
+      ->set('token_refresh_enabled', (bool) $form_state->getValue('token_refresh_enabled'))
+      ->set('token_refresh_minutes', (int) $form_state->getValue('token_refresh_minutes'))
       ->save();
 
     parent::submitForm($form, $form_state);
