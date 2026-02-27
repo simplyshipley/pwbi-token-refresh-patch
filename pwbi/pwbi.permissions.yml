@@ -1,0 +1,3 @@
+configure pwbi:
+  title: 'Administer PowerBi configuration'
+  restrict access: true

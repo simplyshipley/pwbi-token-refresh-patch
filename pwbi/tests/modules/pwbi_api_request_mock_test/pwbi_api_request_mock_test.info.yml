@@ -1,0 +1,8 @@
+name: Power BI API Request Mock Test
+type: module
+description: Module to mock powerbi rest api.
+core_version_requirement: ^10 || ^11
+package: Testing
+dependencies:
+  - http_request_mock:http_request_mock
+  - pwbi:pwbi

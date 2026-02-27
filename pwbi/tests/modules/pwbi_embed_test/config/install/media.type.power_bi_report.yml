@@ -1,0 +1,15 @@
+uuid: 58f852c0-ccbc-4e35-b1d5-f9d59dd47466
+langcode: en
+status: true
+dependencies:
+  module:
+    - pwbi
+id: power_bi_report
+label: 'Power BI Report'
+description: ''
+source: pwbi_embed_visual
+queue_thumbnail_downloads: false
+new_revision: false
+source_configuration:
+  source_field: field_media_pwbi_embed_visual
+field_map: {  }

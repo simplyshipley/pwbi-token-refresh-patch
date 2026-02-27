@@ -1,0 +1,11 @@
+name: Power BI Embed Test
+type: module
+description: Module to test Power BI embed
+core_version_requirement: ^10 || ^11
+package: Testing
+dependencies:
+  - http_request_mock:http_request_mock
+  - pwbi:pwbi
+  - drupal:media
+  - drupal:path
+  - drupal:field

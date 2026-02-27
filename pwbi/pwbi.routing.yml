@@ -1,0 +1,23 @@
+pwbi.settings:
+  path: '/admin/config/pwbi'
+  defaults:
+    _controller: '\Drupal\system\Controller\SystemController::systemAdminMenuBlockPage'
+    _title: 'PowerBi'
+  requirements:
+    _permission: 'configure pwbi'
+
+pwbi.api_test:
+  path: '/admin/config/pwbi/api_test'
+  defaults:
+    _form: '\Drupal\pwbi\Form\PowerBiRestApiTestForm'
+    _title: 'Run requests against PowerBi Rest Api.'
+  requirements:
+    _permission: 'configure pwbi'
+
+pwbi.embed_settings:
+  path: '/admin/config/pwbi/embed_settings'
+  defaults:
+    _form: '\Drupal\pwbi\Form\PowerBiEmbedConfigForm'
+    _title: 'PowerBi Embed Settings'
+  requirements:
+    _permission: 'configure pwbi'

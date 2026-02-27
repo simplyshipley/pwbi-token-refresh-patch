@@ -1,0 +1,9 @@
+name: PowerBi Disclaimer banner
+type: module
+description: Allows creating a disclaimer banner to inform users.
+package: PowerBi
+core_version_requirement: ^10.3 || ^11
+dependencies:
+  - drupal:block
+  - drupal:filter
+  - pwbi:pwbi

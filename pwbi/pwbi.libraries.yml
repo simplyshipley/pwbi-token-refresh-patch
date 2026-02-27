@@ -1,0 +1,4 @@
+pwbi_client:
+  version: 1.x
+  js:
+    /libraries/powerbi/dist/powerbi.min.js: { }
