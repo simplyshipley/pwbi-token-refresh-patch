@@ -1,0 +1,12 @@
+# https://git.drupalcode.org/project/gitlab_templates/
+
+include:
+  - project: $_GITLAB_TEMPLATES_REPO
+    ref: $_GITLAB_TEMPLATES_REF
+    file:
+      - '/includes/include.drupalci.main.yml'
+      - '/includes/include.drupalci.variables.yml'
+      - '/includes/include.drupalci.workflows.yml'
+variables:
+  OPT_IN_TEST_PREVIOUS_MAJOR: 1
+  CORE_PREVIOUS_PHP_MIN: '8.3'

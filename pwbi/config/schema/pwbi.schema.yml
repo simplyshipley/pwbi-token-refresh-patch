@@ -1,0 +1,31 @@
+oauth2_client.oauth2_client.*.third_party.pwbi:
+  type: config_entity
+  label: OAuth2 Client
+  mapping:
+    tenant:
+      type: string
+      label: Tenant
+    client_id:
+      type: string
+      label: Client ID
+    client_secret:
+      type: string
+      label: Client secret
+    use_cert:
+      type: string
+      label: Use certificate
+    cert_file:
+      type: string
+      label: Certificate file
+
+pwbi_embed.embed:
+  type: config_object
+  label: Power Bi workspaces
+  mapping:
+    pwbi_workspaces:
+      type: string
+      label: PowerBi Workspaces
+
+media.source.pwbi_embed_visual:
+  type: media.source.field_aware
+  label: '"PWBI Embed" media source configuration'

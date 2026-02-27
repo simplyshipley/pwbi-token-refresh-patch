@@ -1,0 +1,7 @@
+pwbi_banner.settings:
+  path: '/admin/config/pwbi/pwbi_banner'
+  defaults:
+    _form: '\Drupal\pwbi_banner\Form\PowerBiBannerSettingsForm'
+    _title: 'Power Bi Disclaimer banner'
+  requirements:
+    _permission: 'administer pwbi disclaimer'

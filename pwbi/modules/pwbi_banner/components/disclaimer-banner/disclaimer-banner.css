@@ -1,0 +1,38 @@
+.pwbi-disclaimer-banner {
+  border: 1px solid #d3d8f2;
+  border-radius: 4px;
+  padding: 10px;
+  background-color: #e9ecf9;
+  font-family: "font/family/Body", sans-serif;
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 26px;
+}
+.pwbi-disclaimer-banner .pwbi-disclaimer-wrapper {
+  display: flex;
+}
+.pwbi-disclaimer-banner .pwbi-disclaimer-wrapper .pwbi-disclaimer-img {
+  display: block;
+  min-width: 20px;
+  margin: auto;
+}
+.pwbi-disclaimer-banner .pwbi-disclaimer-wrapper .pwbi-disclaimer-img img {
+  padding-right: 10px;
+}
+.pwbi-disclaimer-banner .pwbi-disclaimer-accept {
+  text-align: center;
+}
+.pwbi-disclaimer-banner .pwbi-disclaimer-accept button {
+  display: inline-block;
+  margin: 0;
+  padding: 1rem 2rem;
+  border: 1px solid #d3d8f2;
+  text-align: center;
+  text-decoration: none;
+  font-family: "font/family/Body", sans-serif;
+  font-weight: 400;
+  border-radius: 4px;
+  background: #fff;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+}

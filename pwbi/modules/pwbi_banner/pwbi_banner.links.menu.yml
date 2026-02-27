@@ -1,0 +1,5 @@
+pwbi_banner.settings:
+  title: 'PowerBI disclaimer banner settings'
+  parent: pwbi.settings
+  description: 'Configure PowerBi disclaimer banner.'
+  route_name: pwbi_banner.settings

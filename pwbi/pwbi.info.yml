@@ -1,0 +1,10 @@
+name: PowerBi Integration
+type: module
+description: Provides tools to integrate PowerBi into Drupal.
+package: PowerBi
+core_version_requirement: ^10.3 || ^11
+php: 8.3
+dependencies:
+  - oauth2_client:oauth2_client
+  - drupal:media
+  - drupal:breakpoint

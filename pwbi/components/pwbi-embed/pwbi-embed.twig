@@ -1,0 +1,13 @@
+{% set width = 'width:' ~ report_width ~ report_width_units %}
+{% set embed_media_class = 'media-' ~ report_id %}
+{% set classes = [ embed_media_class, 'pwbi-embed' ] %}
+{{ media_styles }}
+<div class="pwbi-embed-container" style="{{ width }}">
+  {% if overlay_top|default %}
+    <div class="pwbi-embed-overlay-top">{{ overlay_top }}</div>
+  {% endif %}
+  {% if overlay_blocking|default %}
+    <div class="pwbi-embed-overlay-blocking">{{ overlay_blocking }}</div>
+  {% endif %}
+  <div id="{{ report_id }}" {{ attributes.addClass(classes) }}></div>
+</div>
