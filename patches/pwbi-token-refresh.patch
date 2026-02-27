@@ -1,0 +1,445 @@
+diff --git a/components/pwbi-embed/pwbi-embed.js b/components/pwbi-embed/pwbi-embed.js
+index d7e3842..4396a6d 100644
+--- a/components/pwbi-embed/pwbi-embed.js
++++ b/components/pwbi-embed/pwbi-embed.js
+@@ -1,4 +1,108 @@
+ ((Drupal) => {
++  /**
++   * Schedule a token refresh before the current embed token expires.
++   *
++   * Reads the JWT exp claim to calculate when to fire. Adds random jitter to
++   * prevent a thundering herd when many users load the same cached page.
++   * Also registers a visibilitychange listener so a token that expired while
++   * the tab was backgrounded is refreshed immediately on return.
++   *
++   * @param {HTMLElement} embedContainer - The container element for the embed.
++   * @param {object} embedSettings - The drupalSettings entry for this report.
++   * @param {object} powerbiClient - The global powerbi client object.
++   */
++  function scheduleTokenRefresh(embedContainer, embedSettings, powerbiClient) {
++    const arrayToken = embedSettings.accessToken.split('.');
++    if (arrayToken.length < 2) {
++      return;
++    }
++    const tokenPayload = JSON.parse(atob(arrayToken[1]));
++    if (tokenPayload?.exp === undefined) {
++      return;
++    }
++    const expMs = tokenPayload.exp * 1000;
++    const refreshMinutes = embedSettings.token_refresh_minutes ?? 10;
++    const refreshMs = refreshMinutes * 60 * 1000;
++    // Add up to 30 seconds jitter to prevent thundering herd.
++    const jitter = Math.random() * 30000;
++    const delay = expMs - Date.now() - refreshMs + jitter;
++
++    if (delay <= 0) {
++      // Token already close to expiry or past; refresh immediately.
++      performTokenRefresh(embedContainer, embedSettings, powerbiClient);
++      return;
++    }
++
++    // Both the timer and the visibility listener are set up together so each
++    // can cancel the other, preventing duplicate refreshes and listener leaks.
++    let visibilityHandler;
++
++    const timerId = setTimeout(() => {
++      document.removeEventListener('visibilitychange', visibilityHandler);
++      performTokenRefresh(embedContainer, embedSettings, powerbiClient);
++    }, delay);
++
++    // Also refresh when tab becomes visible (catches expiry during inactivity).
++    visibilityHandler = function onVisible() {
++      if (document.visibilityState === 'visible') {
++        const nowMs = Date.now();
++        if (nowMs >= expMs - refreshMs) {
++          clearTimeout(timerId);
++          document.removeEventListener('visibilitychange', visibilityHandler);
++          performTokenRefresh(embedContainer, embedSettings, powerbiClient);
++        }
++      }
++    };
++    document.addEventListener('visibilitychange', visibilityHandler);
++  }
++
++  /**
++   * Fetch a fresh embed token from Drupal and apply it to the live report.
++   *
++   * Uses `powerbi.get(embedContainer)` (Microsoft's recommended pattern) to
++   * obtain the live report reference. After applying the new token the refresh
++   * cycle is rescheduled so the embed stays alive indefinitely.
++   *
++   * @param {HTMLElement} embedContainer
++   * @param {object} embedSettings
++   * @param {object} powerbiClient
++   */
++  async function performTokenRefresh(embedContainer, embedSettings, powerbiClient) {
++    const { workspaceId, id: reportId, datasetId } = embedSettings;
++    try {
++      const base = drupalSettings.path.baseUrl;
++      const refreshUrl = `${base}pwbi/token-refresh/${workspaceId}/${reportId}?dataset_id=${encodeURIComponent(datasetId)}`;
++      const response = await fetch(refreshUrl, {
++        method: 'GET',
++        headers: {
++          'Accept': 'application/json',
++        },
++      });
++
++      if (!response.ok) {
++        console.error('[pwbi] Token refresh HTTP error', response.status);
++        return;
++      }
++
++      const data = await response.json();
++      if (!data.token) {
++        console.error('[pwbi] Token refresh response missing token');
++        return;
++      }
++
++      // Use powerbi.get() to retrieve the live report reference.
++      const liveReport = powerbiClient.get(embedContainer);
++      await liveReport.setAccessToken(data.token);
++
++      // Update local embedSettings and reschedule for the next cycle.
++      embedSettings.accessToken = data.token;
++      scheduleTokenRefresh(embedContainer, embedSettings, powerbiClient);
++    }
++    catch (err) {
++      console.error('[pwbi] Token refresh failed', err);
++    }
++  }
++
+   const pwbiEmbed = {
+     runEmbeds(pwbiEmbeds, powerbiClient) {
+       Object.entries(pwbiEmbeds).forEach((entry) => {
+@@ -47,6 +151,10 @@
+         });
+         report.on('rendered', () => {
+           window.dispatchEvent(PowerBiPostEmbed);
++          // Start token refresh timer if enabled.
++          if (embedSettings.token_refresh_enabled) {
++            scheduleTokenRefresh(embedContainer, embedSettings, powerbiClient);
++          }
+         });
+       });
+     },
+diff --git a/config/install/pwbi.settings.yml b/config/install/pwbi.settings.yml
+index 921d3f8..48fbd42 100644
+--- a/config/install/pwbi.settings.yml
++++ b/config/install/pwbi.settings.yml
+@@ -1 +1,3 @@
+ pwbi_api_endpoint: 'https://api.powerbi.com'
++token_refresh_enabled: false
++token_refresh_minutes: 10
+diff --git a/config/schema/pwbi.schema.yml b/config/schema/pwbi.schema.yml
+index 118b83b..f8ad781 100644
+--- a/config/schema/pwbi.schema.yml
++++ b/config/schema/pwbi.schema.yml
+@@ -33,6 +33,12 @@ pwbi.settings:
+     pwbi_api_endpoint:
+       type: string
+       label: Power BI API endpoint
++    token_refresh_enabled:
++      type: boolean
++      label: Enable automatic embed token refresh
++    token_refresh_minutes:
++      type: integer
++      label: Minutes before expiry to refresh
+ 
+ media.source.pwbi_embed_visual:
+   type: media.source.field_aware
+diff --git a/pwbi.routing.yml b/pwbi.routing.yml
+index 020547c..fb587a0 100644
+--- a/pwbi.routing.yml
++++ b/pwbi.routing.yml
+@@ -21,3 +21,13 @@ pwbi.embed_settings:
+     _title: 'PowerBi Embed Settings'
+   requirements:
+     _permission: 'configure pwbi'
++
++pwbi.token_refresh:
++  path: '/pwbi/token-refresh/{workspace_id}/{report_id}'
++  defaults:
++    _controller: '\Drupal\pwbi\Controller\PwbiTokenRefreshController::refresh'
++    _title: 'Power BI token refresh'
++  requirements:
++    _permission: 'access content'
++    workspace_id: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
++    report_id: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+diff --git a/src/Controller/PwbiTokenRefreshController.php b/src/Controller/PwbiTokenRefreshController.php
+new file mode 100644
+index 0000000..2890d4b
+--- /dev/null
++++ b/src/Controller/PwbiTokenRefreshController.php
+@@ -0,0 +1,145 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Drupal\pwbi\Controller;
++
++use Drupal\Component\Serialization\Json;
++use Drupal\Core\Controller\ControllerBase;
++use Drupal\pwbi\Api\PowerBiClient;
++use Drupal\pwbi\PowerBiEmbed;
++use Symfony\Component\DependencyInjection\ContainerInterface;
++use Symfony\Component\HttpFoundation\JsonResponse;
++use Symfony\Component\HttpFoundation\RequestStack;
++
++/**
++ * Returns a fresh embed token for an active Power BI report embed.
++ */
++class PwbiTokenRefreshController extends ControllerBase {
++
++  private const UUID_PATTERN = '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i';
++
++  public function __construct(
++    protected readonly PowerBiClient $pwbiClient,
++    protected readonly PowerBiEmbed $pwbiEmbed,
++    protected readonly RequestStack $requestStack,
++  ) {}
++
++  /**
++   * {@inheritdoc}
++   */
++  public static function create(ContainerInterface $container): static {
++    // @phpstan-ignore-next-line
++    return new static(
++      $container->get('pwbi_api.client'),
++      $container->get('pwbi_embed.embed'),
++      $container->get('request_stack'),
++    );
++  }
++
++  /**
++   * Issue a fresh embed token for the given workspace+report combination.
++   *
++   * Only workspace+report pairs that are currently configured as active
++   * embeds in the site's State API are eligible — this is the allowlist.
++   *
++   * @param string $workspace_id
++   *   The Power BI workspace (group) UUID.
++   * @param string $report_id
++   *   The Power BI report UUID.
++   *
++   * @return \Symfony\Component\HttpFoundation\JsonResponse
++   *   JSON with `token`, or an error with HTTP 400/403/502.
++   */
++  public function refresh(string $workspace_id, string $report_id): JsonResponse {
++    // Allowlist check: confirm this workspace+report is an active embed.
++    if (!$this->isAllowedEmbed($workspace_id, $report_id)) {
++      return new JsonResponse(['error' => 'Forbidden'], 403, [
++        'Cache-Control' => 'no-store',
++      ]);
++    }
++
++    // NOTE: datasetId is passed via drupalSettings on initial page load.
++    // The client must include it as a query parameter: ?dataset_id=...
++    // This avoids calling getEmbedDataFromApi() (3x API cost).
++    $dataset_id = (string) $this->requestStack->getCurrentRequest()?->query->get('dataset_id', '');
++    if (empty($dataset_id)) {
++      return new JsonResponse(['error' => 'dataset_id query parameter required'], 400, [
++        'Cache-Control' => 'no-store',
++      ]);
++    }
++
++    // Validate dataset_id is a properly-formed UUID before passing to API.
++    if (!preg_match(self::UUID_PATTERN, $dataset_id)) {
++      return new JsonResponse(['error' => 'Invalid dataset_id format'], 400, [
++        'Cache-Control' => 'no-store',
++      ]);
++    }
++
++    $body = [
++      'datasets' => [['id' => $dataset_id]],
++      'reports'  => [['id' => $report_id]],
++    ];
++
++    try {
++      $result = Json::decode($this->pwbiClient->getEmbedToken($body));
++    }
++    catch (\Exception $e) {
++      return new JsonResponse(['error' => 'Token generation failed'], 502, [
++        'Cache-Control' => 'no-store',
++      ]);
++    }
++
++    // connect() returns a plain error string on HTTP failure, which
++    // Json::decode() resolves to null — guard before subscripting.
++    if (!is_array($result) || empty($result['token'])) {
++      return new JsonResponse(['error' => 'Empty token from API'], 502, [
++        'Cache-Control' => 'no-store',
++      ]);
++    }
++
++    return new JsonResponse([
++      'token' => $result['token'],
++    ], 200, [
++      'Cache-Control' => 'no-store',
++    ]);
++  }
++
++  /**
++   * Check whether the workspace+report pair is an active configured embed.
++   *
++   * Reads the State API workspaces list and confirms the given workspace_id
++   * is listed. The report_id validation is intentionally loose (workspace
++   * membership is the binding constraint for our service principal scope).
++   *
++   * @param string $workspace_id
++   *   The workspace UUID to validate.
++   * @param string $report_id
++   *   The report UUID (validated for UUID format only).
++   *
++   * @return bool
++   *   TRUE if the combination is permitted.
++   */
++  protected function isAllowedEmbed(string $workspace_id, string $report_id): bool {
++    if (!preg_match(self::UUID_PATTERN, $workspace_id) || !preg_match(self::UUID_PATTERN, $report_id)) {
++      return FALSE;
++    }
++
++    $config = $this->pwbiEmbed->getEmbedConfiguration();
++    $workspaces_raw = $config['pwbi_workspaces'] ?? '';
++    if (empty($workspaces_raw)) {
++      return FALSE;
++    }
++
++    // Each line is "workspaceid|Workspace Name". Check if workspace_id is listed.
++    foreach (explode("\n", $workspaces_raw) as $line) {
++      $parts = explode('|', trim($line));
++      if (isset($parts[0]) && trim($parts[0]) === $workspace_id) {
++        return TRUE;
++      }
++    }
++
++    return FALSE;
++  }
++
++}
+diff --git a/src/Form/PowerBiEmbedConfigForm.php b/src/Form/PowerBiEmbedConfigForm.php
+index e23dc9b..86c26f0 100644
+--- a/src/Form/PowerBiEmbedConfigForm.php
++++ b/src/Form/PowerBiEmbedConfigForm.php
+@@ -77,9 +77,39 @@ class PowerBiEmbedConfigForm extends ConfigFormBase {
+       '#description' => $this->t('Select the Power BI REST API root for your tenant cloud environment.'),
+     ];
+ 
++    $form['token_refresh_enabled'] = [
++      '#type' => 'checkbox',
++      '#title' => $this->t('Enable automatic embed token refresh'),
++      '#default_value' => $pwbi_settings->get('token_refresh_enabled') ?? FALSE,
++      '#description' => $this->t('Silently renew embed tokens before they expire, preserving all user state.'),
++    ];
++
++    $form['token_refresh_minutes'] = [
++      '#type' => 'number',
++      '#title' => $this->t('Minutes before expiry to refresh'),
++      '#default_value' => $pwbi_settings->get('token_refresh_minutes') ?? 10,
++      '#min' => 1,
++      '#max' => 55,
++      '#description' => $this->t('Request a new token this many minutes before the current one expires.'),
++      '#states' => [
++        'visible' => [':input[name="token_refresh_enabled"]' => ['checked' => TRUE]],
++      ],
++    ];
++
+     return $form;
+   }
+ 
++  /**
++   * {@inheritdoc}
++   */
++  public function validateForm(array &$form, FormStateInterface $form_state): void {
++    $minutes = (int) $form_state->getValue('token_refresh_minutes');
++    if ($minutes < 1 || $minutes > 55) {
++      $form_state->setErrorByName('token_refresh_minutes', $this->t('Minutes must be between 1 and 55.'));
++    }
++    parent::validateForm($form, $form_state);
++  }
++
+   /**
+    * {@inheritdoc}
+    */
+@@ -88,9 +118,11 @@ class PowerBiEmbedConfigForm extends ConfigFormBase {
+     $settings = ['pwbi_workspaces' => $form_state->getValue('pwbi_workspaces')];
+     $this->pwbiEmbed->setEmbedConfiguration($settings);
+ 
+-    // Save API endpoint to Config API.
++    // New: save API settings to Config API.
+     $this->config('pwbi.settings')
+       ->set('pwbi_api_endpoint', $form_state->getValue('pwbi_api_endpoint'))
++      ->set('token_refresh_enabled', (bool) $form_state->getValue('token_refresh_enabled'))
++      ->set('token_refresh_minutes', (int) $form_state->getValue('token_refresh_minutes'))
+       ->save();
+ 
+     parent::submitForm($form, $form_state);
+diff --git a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php b/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
+index 95c5ec3..2856a64 100644
+--- a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
++++ b/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
+@@ -6,6 +6,7 @@ namespace Drupal\pwbi\Plugin\Field\FieldFormatter;
+ 
+ use Drupal\breakpoint\BreakpointManager;
+ use Drupal\Component\Datetime\TimeInterface;
++use Drupal\Core\Config\ConfigFactoryInterface;
+ use Drupal\Core\Datetime\DrupalDateTime;
+ use Drupal\Core\Field\FieldDefinitionInterface;
+ use Drupal\Core\Field\FieldItemListInterface;
+@@ -44,12 +45,13 @@ class PowerBiEmbedFormatter extends FormatterBase {
+     protected BreakpointManager $breakpointManager,
+     protected EventDispatcherInterface $dispatcher,
+     protected TimeInterface $time,
++    protected readonly ConfigFactoryInterface $configFactory,
+   ) {
+     parent::__construct($plugin_id, $plugin_definition, $field_definition, $settings, $label, $view_mode, $third_party_settings);
+   }
+ 
+   /**
+-   * {@inheritDoc}
++   * {@inheritdoc}
+    */
+   public static function create(ContainerInterface $container, array $configuration, $plugin_id, $plugin_definition): static {
+     // @phpstan-ignore-next-line
+@@ -65,6 +67,7 @@ class PowerBiEmbedFormatter extends FormatterBase {
+       $container->get('breakpoint.manager'),
+       $container->get('event_dispatcher'),
+       $container->get('datetime.time'),
++      $container->get('config.factory'),
+     );
+   }
+ 
+@@ -186,11 +189,22 @@ class PowerBiEmbedFormatter extends FormatterBase {
+     $embed_options['settings']['layoutType'] = (int) $item->getValue()['report_layout'];
+     $embed_options['settings']['localeSettings'] = $this->getPowerBiLangcode($langcode);
+     $embed_options['tokenType'] = (int) ($embed_options['tokenType'] === 'Embed');
++
++    // Pass workspaceId so the JS refresh call can address the right workspace.
++    $embed_options['workspaceId'] = $item->getValue()['workspace_id'];
++
+     foreach ($embed_options as $key => $embedOption) {
+       if (empty($embedOption)) {
+         unset($embed_options[$key]);
+       }
+     }
++
++    // Set token refresh config after the empty() cleanup loop since empty(FALSE)
++    // and empty(0) are truthy and would strip these values if set beforehand.
++    $pwbi_settings = $this->configFactory->get('pwbi.settings');
++    $embed_options['token_refresh_enabled'] = (bool) ($pwbi_settings->get('token_refresh_enabled') ?? FALSE);
++    $embed_options['token_refresh_minutes'] = (int) ($pwbi_settings->get('token_refresh_minutes') ?? 10);
++
+     return $embed_options;
+   }
+ 
+diff --git a/src/PowerBiEmbed.php b/src/PowerBiEmbed.php
+index e49c1bb..7badb1b 100644
+--- a/src/PowerBiEmbed.php
++++ b/src/PowerBiEmbed.php
+@@ -89,6 +89,7 @@ class PowerBiEmbed implements ContainerInjectionInterface {
+       'embedUrl' => $reportInfo['embedUrl'],
+       'accessToken' => $embedToken['token'],
+       'tokenExpirationDate' => $embedToken['expiration'],
++      'datasetId' => $reportInfo['datasetId'],
+     ];
+   }
+ 
