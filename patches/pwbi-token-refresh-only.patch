@@ -1,8 +1,8 @@
 diff --git a/components/pwbi-embed/pwbi-embed.js b/components/pwbi-embed/pwbi-embed.js
-index d7e3842..4396a6d 100644
+index fd784bc..4396a6d 100644
 --- a/components/pwbi-embed/pwbi-embed.js
 +++ b/components/pwbi-embed/pwbi-embed.js
-@@ -1,4 +1,108 @@
+@@ -1,16 +1,121 @@
  ((Drupal) => {
 +  /**
 +   * Schedule a token refresh before the current embed token expires.
@@ -109,11 +109,48 @@ index d7e3842..4396a6d 100644
 +  }
 +
    const pwbiEmbed = {
-     runEmbeds(pwbiEmbeds, powerbiClient) {
-       Object.entries(pwbiEmbeds).forEach((entry) => {
-@@ -47,6 +151,10 @@
+-    runEmbeds(pwbi_embeds, powerbi) {
+-      Object.entries(pwbi_embeds).forEach((entry) => {
++    runEmbeds(pwbiEmbeds, powerbiClient) {
++      Object.entries(pwbiEmbeds).forEach((entry) => {
+         const [key, embedSettings] = entry;
+         const embedContainer = document.getElementById(embedSettings.id);
+         // powerbi is the global object of the powerbi-client library.
+-        for (const i in powerbi.embeds) {
+-          if (powerbi.embeds[i].element.id === embedSettings.id) {
+-            return;
+-          }
++        const alreadyEmbedded = Object.values(powerbiClient.embeds).some(
++          (embed) => embed.element.id === embedSettings.id,
++        );
++        if (alreadyEmbedded) {
++          return;
+         }
+-        const arrayToken = embedSettings.accessToken.split(".");
++        const arrayToken = embedSettings.accessToken.split('.');
+         if (arrayToken.length < 2) {
+           return;
+         }
+@@ -33,37 +138,41 @@
+           detail: powerBiEmbedParams,
          });
-         report.on('rendered', () => {
+         window.dispatchEvent(PowerBiPreEmbed);
+-        const report = powerbi.load(
++        const report = powerbiClient.load(
+           powerBiEmbedParams.embedContainer,
+           powerBiEmbedParams.embedConfiguration,
+         );
+         // Embed the visual.
+-        const PowerBiPostEmbed = new CustomEvent("PowerBiPostEmbed", {
++        const PowerBiPostEmbed = new CustomEvent('PowerBiPostEmbed', {
+           detail: report,
+         });
+-        report.on("loaded", () => {
++        report.on('loaded', () => {
+           report.render();
+         });
+-        report.on("rendered", () => {
++        report.on('rendered', () => {
            window.dispatchEvent(PowerBiPostEmbed);
 +          // Start token refresh timer if enabled.
 +          if (embedSettings.token_refresh_enabled) {
@@ -122,19 +159,74 @@ index d7e3842..4396a6d 100644
          });
        });
      },
+-    setEvents(settings, powerbi) {
++    setEvents(settings, powerbiClient) {
+       const powerBiEmbed = {
+         callback: this.runEmbeds,
+         pwbi_embed: settings.pwbi_embed,
+-        powerbi,
++        powerbi: powerbiClient,
+       };
+-      const blockEmbedEvent = new CustomEvent("pwbi_embed_block", {
++      const blockEmbedEvent = new CustomEvent('pwbi_embed_block', {
+         detail: {
+           block: false,
+           powerBiEmbed,
+         },
+       });
+-      document.addEventListener("pwbi_embed_block", (e) => {
++      document.addEventListener('pwbi_embed_block', (e) => {
+         if (e.detail.block === false) {
+-          this.runEmbeds(settings.pwbi_embed, powerbi);
++          this.runEmbeds(settings.pwbi_embed, powerbiClient);
+         }
+       });
+       document.dispatchEvent(blockEmbedEvent);
+@@ -75,7 +184,7 @@
+       if (!settings.pwbi_flag) {
+         const waitForGlobal = function (key, settings) {
+           if (window[key]) {
+-            pwbiEmbed.setEvents(settings, powerbi);
++            pwbiEmbed.setEvents(settings, window[key]);
+           } else {
+             setTimeout(function () {
+               waitForGlobal(key, settings);
+@@ -83,7 +192,7 @@
+           }
+         };
+         settings.pwbi_flag = true;
+-        waitForGlobal("powerbi", settings);
++        waitForGlobal('powerbi', settings);
+       }
+     },
+     detach() {},
 diff --git a/config/install/pwbi.settings.yml b/config/install/pwbi.settings.yml
 new file mode 100644
-index 0000000..237c2d5
+index 0000000..48fbd42
 --- /dev/null
 +++ b/config/install/pwbi.settings.yml
-@@ -0,0 +1,2 @@
+@@ -0,0 +1,3 @@
++pwbi_api_endpoint: 'https://api.powerbi.com'
 +token_refresh_enabled: false
 +token_refresh_minutes: 10
 diff --git a/config/schema/pwbi.schema.yml b/config/schema/pwbi.schema.yml
-index 7a7e574..046ec49 100644
+index 6397c5b..f8ad781 100644
 --- a/config/schema/pwbi.schema.yml
 +++ b/config/schema/pwbi.schema.yml
-@@ -26,6 +26,17 @@ pwbi_embed.embed:
+@@ -5,6 +5,12 @@ oauth2_client.oauth2_client.*.third_party.pwbi:
+     tenant:
+       type: string
+       label: Tenant
++    client_id:
++      type: string
++      label: Client ID
++    client_secret:
++      type: string
++      label: Client secret
+     use_cert:
+       type: string
+       label: Use certificate
+@@ -20,6 +26,20 @@ pwbi_embed.embed:
        type: string
        label: PowerBi Workspaces
  
@@ -142,6 +234,9 @@ index 7a7e574..046ec49 100644
 +  type: config_object
 +  label: Power BI module settings
 +  mapping:
++    pwbi_api_endpoint:
++      type: string
++      label: Power BI API endpoint
 +    token_refresh_enabled:
 +      type: boolean
 +      label: Enable automatic embed token refresh
@@ -322,7 +417,7 @@ index 0000000..2890d4b
 +
 +}
 diff --git a/src/Form/PowerBiEmbedConfigForm.php b/src/Form/PowerBiEmbedConfigForm.php
-index 47c62a2..55aad8c 100644
+index 5c2b2e7..55aad8c 100644
 --- a/src/Form/PowerBiEmbedConfigForm.php
 +++ b/src/Form/PowerBiEmbedConfigForm.php
 @@ -4,7 +4,8 @@ declare(strict_types=1);
@@ -371,7 +466,7 @@ index 47c62a2..55aad8c 100644
    /**
     * Getter method for Form ID.
     *
-@@ -46,6 +58,8 @@ class PowerBiEmbedConfigForm extends FormBase {
+@@ -46,34 +58,67 @@ class PowerBiEmbedConfigForm extends FormBase {
     * {@inheritdoc}
     */
    public function buildForm(array $form, FormStateInterface $form_state): array {
@@ -380,9 +475,11 @@ index 47c62a2..55aad8c 100644
      $settings = $this->pwbiEmbed->getEmbedConfiguration();
      $form['pwbi_workspaces'] = [
        '#type' => 'textarea',
-@@ -54,26 +68,57 @@ class PowerBiEmbedConfigForm extends FormBase {
+       '#title' => $this->t('PowerBi Workspaces'),
+       '#default_value' => $settings['pwbi_workspaces'] ?? '',
        '#required' => TRUE,
-       '#description' => $this->t('Add here a list of available workspaces with the form workspaceid|work space name, for example: <div>1234512345|My workspace</div><div>112345465767|Another workspace</div>'),
+-      '#description' => $this->t('Add here a list of available workspaces with the form workspaceid|workspacename, for example: <div>weqrdsftertert|My workspace</div><div>fjkyurvadsfcbdwasdfg|Another workspace</div>'),
++      '#description' => $this->t('Add here a list of available workspaces with the form workspaceid|work space name, for example: <div>1234512345|My workspace</div><div>112345465767|Another workspace</div>'),
      ];
 -    $form['actions']['submit'] = [
 -      '#type' => 'submit',
@@ -450,21 +547,23 @@ index 47c62a2..55aad8c 100644
  
  }
 diff --git a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php b/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
-index 95c5ec3..2856a64 100644
+index 0876f69..2856a64 100644
 --- a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
 +++ b/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
-@@ -6,6 +6,7 @@ namespace Drupal\pwbi\Plugin\Field\FieldFormatter;
+@@ -5,6 +5,8 @@ declare(strict_types=1);
+ namespace Drupal\pwbi\Plugin\Field\FieldFormatter;
  
  use Drupal\breakpoint\BreakpointManager;
- use Drupal\Component\Datetime\TimeInterface;
++use Drupal\Component\Datetime\TimeInterface;
 +use Drupal\Core\Config\ConfigFactoryInterface;
  use Drupal\Core\Datetime\DrupalDateTime;
  use Drupal\Core\Field\FieldDefinitionInterface;
  use Drupal\Core\Field\FieldItemListInterface;
-@@ -44,12 +45,13 @@ class PowerBiEmbedFormatter extends FormatterBase {
+@@ -42,12 +44,14 @@ class PowerBiEmbedFormatter extends FormatterBase {
+     protected PowerBiEmbed $pwbiEmbed,
      protected BreakpointManager $breakpointManager,
      protected EventDispatcherInterface $dispatcher,
-     protected TimeInterface $time,
++    protected TimeInterface $time,
 +    protected readonly ConfigFactoryInterface $configFactory,
    ) {
      parent::__construct($plugin_id, $plugin_definition, $field_definition, $settings, $label, $view_mode, $third_party_settings);
@@ -476,27 +575,59 @@ index 95c5ec3..2856a64 100644
     */
    public static function create(ContainerInterface $container, array $configuration, $plugin_id, $plugin_definition): static {
      // @phpstan-ignore-next-line
-@@ -65,6 +67,7 @@ class PowerBiEmbedFormatter extends FormatterBase {
+@@ -62,6 +66,8 @@ class PowerBiEmbedFormatter extends FormatterBase {
+       $container->get('pwbi_embed.embed'),
        $container->get('breakpoint.manager'),
        $container->get('event_dispatcher'),
-       $container->get('datetime.time'),
++      $container->get('datetime.time'),
 +      $container->get('config.factory'),
      );
    }
  
-@@ -186,11 +189,22 @@ class PowerBiEmbedFormatter extends FormatterBase {
-     $embed_options['settings']['layoutType'] = (int) $item->getValue()['report_layout'];
-     $embed_options['settings']['localeSettings'] = $this->getPowerBiLangcode($langcode);
-     $embed_options['tokenType'] = (int) ($embed_options['tokenType'] === 'Embed');
+@@ -85,10 +91,10 @@ class PowerBiEmbedFormatter extends FormatterBase {
+       $report_width_units = $item->getValue()['report_width_units'];
+       $report_configuration = $this->pwbiEmbed->getEmbedDataFromApi($workspace, $report_id);
+       $token_expiration = new DrupalDateTime((string) $report_configuration['tokenExpirationDate']);
+-      $current_time = new DrupalDateTime();
++      $current_time = $this->time->getRequestTime();
+       $cache_max_age = 0;
+-      if ($token_expiration->getTimestamp() > $current_time->getTimestamp()) {
+-        $cache_max_age = $token_expiration->getTimestamp() - $current_time->getTimestamp();
++      if ($token_expiration->getTimestamp() > $current_time) {
++        $cache_max_age = $token_expiration->getTimestamp() - $current_time;
+       }
+       $embed_array = [
+         '#cache' => [
+@@ -176,19 +182,30 @@ class PowerBiEmbedFormatter extends FormatterBase {
+    *   The options that will be used to embed a powerbi report.
+    */
+   private function buildEmbedConfiguration(PowerBiEmbedField $item, array $report_configuration, string $langcode): array {
+-    $embed_pptions = $report_configuration;
+-    $embed_pptions['tokenType'] = $item->getValue()['token_type'];
+-    $embed_pptions['type'] = $item->getValue()['embed_type'];
+-    $embed_pptions['id'] = $item->getValue()['report_id'];
+-    $embed_pptions['settings']['layoutType'] = (int) $item->getValue()['report_layout'];
+-    $embed_pptions['settings']['localeSettings'] = $this->getPowerBiLangcode($langcode);
+-    $embed_pptions['tokenType'] = (int) ($embed_pptions['tokenType'] === 'Embed');
+-    foreach ($embed_pptions as $key => $embedOption) {
++    $embed_options = $report_configuration;
++    $embed_options['tokenType'] = $item->getValue()['token_type'];
++    $embed_options['type'] = $item->getValue()['embed_type'];
++    $embed_options['id'] = $item->getValue()['report_id'];
++    $embed_options['settings']['layoutType'] = (int) $item->getValue()['report_layout'];
++    $embed_options['settings']['localeSettings'] = $this->getPowerBiLangcode($langcode);
++    $embed_options['tokenType'] = (int) ($embed_options['tokenType'] === 'Embed');
 +
 +    // Pass workspaceId so the JS refresh call can address the right workspace.
 +    $embed_options['workspaceId'] = $item->getValue()['workspace_id'];
 +
-     foreach ($embed_options as $key => $embedOption) {
++    foreach ($embed_options as $key => $embedOption) {
        if (empty($embedOption)) {
-         unset($embed_options[$key]);
+-        unset($embed_pptions[$key]);
++        unset($embed_options[$key]);
        }
      }
+-    return $embed_pptions;
 +
 +    // Set token refresh config after the empty() cleanup loop since empty(FALSE)
 +    // and empty(0) are truthy and would strip these values if set beforehand.
@@ -504,9 +635,10 @@ index 95c5ec3..2856a64 100644
 +    $embed_options['token_refresh_enabled'] = (bool) ($pwbi_settings->get('token_refresh_enabled') ?? FALSE);
 +    $embed_options['token_refresh_minutes'] = (int) ($pwbi_settings->get('token_refresh_minutes') ?? 10);
 +
-     return $embed_options;
++    return $embed_options;
    }
  
+ }
 diff --git a/src/PowerBiEmbed.php b/src/PowerBiEmbed.php
 index e49c1bb..7badb1b 100644
 --- a/src/PowerBiEmbed.php
