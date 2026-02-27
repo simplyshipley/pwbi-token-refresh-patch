@@ -33,6 +33,12 @@ pwbi.settings:
     pwbi_api_endpoint:
       type: string
       label: Power BI API endpoint
+    token_refresh_enabled:
+      type: boolean
+      label: Enable automatic embed token refresh
+    token_refresh_minutes:
+      type: integer
+      label: Minutes before expiry to refresh
 
 media.source.pwbi_embed_visual:
   type: media.source.field_aware
