@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Drupal\pwbi\Api;
 
 use Drupal\Component\Serialization\Json;
+use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\DependencyInjection\ContainerInjectionInterface;
 use Drupal\Core\File\FileSystemInterface;
 use Drupal\Core\File\FileUrlGenerator;
@@ -20,14 +21,12 @@ use Symfony\Component\DependencyInjection\ContainerInterface;
  */
 class PowerBiClient implements ContainerInjectionInterface {
 
-  protected const PWBI_GENERATE_TOKEN_ENDPOINT = 'https://api.powerbi.com/v1.0/myorg/GenerateToken';
-  protected const PWBI_EXECUTE_QUERY_ENDPOINT = 'https://api.powerbi.com/v1.0/myorg/datasets/%s/executeQueries';
-  protected const PWBI_EXECUTE_QUERY_GROUP_ENDPOINT = 'https://api.powerbi.com/v1.0/myorg/groups/%s/datasets/%s/executeQueries';
-  protected const PWBI_EXPORT_GROUP_TO_FILE_ENDPOINT = 'https://api.powerbi.com/v1.0/myorg/groups/%s/reports/%s/ExportTo';
-  protected const PWBI_EXPORT_GROUP_TO_FILE_STATUS_ENDPOINT = 'https://api.powerbi.com/v1.0/myorg/groups/%s/reports/%s/exports/%s';
-  protected const PWBI_GET_GROUP_FILE_ENDPOINT = 'https://api.powerbi.com/v1.0/myorg/groups/%s/reports/%s/exports/%s/file';
-  protected const PWBI_GET_GROUP_REPORT = 'https://api.powerbi.com/v1.0/myorg/groups/%s/reports/%s';
-  protected const PWBI_GET_GROUP_PAGES = 'https://api.powerbi.com/v1.0/myorg/groups/%s/reports/%s/pages';
+  private const API_ENDPOINTS = [
+    'commercial' => 'https://api.powerbi.com',
+    'gcc'        => 'https://api.powerbigov.us',
+    'gcc_high'   => 'https://api.high.powerbigov.us',
+    'dod'        => 'https://api.mil.powerbigov.us',
+  ];
 
   public function __construct(
     protected readonly StateInterface $state,
@@ -36,6 +35,7 @@ class PowerBiClient implements ContainerInjectionInterface {
     protected readonly Oauth2ClientService $auth,
     protected readonly FileUrlGenerator $fileUrlGenerator,
     protected readonly FileSystemInterface $fileSystem,
+    protected readonly ConfigFactoryInterface $configFactory,
   ) {}
 
   /**
@@ -50,7 +50,20 @@ class PowerBiClient implements ContainerInjectionInterface {
       $container->get('oauth2_client.service'),
       $container->get('file_url_generator'),
       $container->get('file_system'),
+      $container->get('config.factory'),
     );
+  }
+
+  /**
+   * Get the API root URL based on the configured endpoint.
+   *
+   * @return string
+   *   The API root URL with no trailing slash.
+   */
+  protected function getApiRoot(): string {
+    $config = $this->configFactory->get('pwbi.settings');
+    $endpoint = $config->get('pwbi_api_endpoint') ?? self::API_ENDPOINTS['commercial'];
+    return rtrim((string) $endpoint, '/');
   }
 
   /**
@@ -120,7 +133,7 @@ class PowerBiClient implements ContainerInjectionInterface {
    * @throws \Exception
    */
   public function getEmbedToken(array $body): string {
-    return $this->connect('post', self::PWBI_GENERATE_TOKEN_ENDPOINT, $body);
+    return $this->connect('post', $this->getApiRoot() . '/v1.0/myorg/GenerateToken', $body);
   }
 
   /**
@@ -137,7 +150,7 @@ class PowerBiClient implements ContainerInjectionInterface {
    * @throws \Exception
    */
   public function executeQuery(string $datasetId, array $body): string {
-    $endpoint = sprintf(self::PWBI_EXECUTE_QUERY_ENDPOINT, $datasetId);
+    $endpoint = sprintf($this->getApiRoot() . '/v1.0/myorg/datasets/%s/executeQueries', $datasetId);
     return $this->connect('post', $endpoint, $body);
   }
 
@@ -157,7 +170,7 @@ class PowerBiClient implements ContainerInjectionInterface {
    * @throws \Exception
    */
   public function executeGroupQuery(string $workspace, string $datasetId, array $body): string {
-    $endpoint = sprintf(self::PWBI_EXECUTE_QUERY_GROUP_ENDPOINT, $workspace, $datasetId);
+    $endpoint = sprintf($this->getApiRoot() . '/v1.0/myorg/groups/%s/datasets/%s/executeQueries', $workspace, $datasetId);
     return $this->connect('post', $endpoint, $body);
   }
 
@@ -177,7 +190,7 @@ class PowerBiClient implements ContainerInjectionInterface {
    * @throws \Exception
    */
   public function exportGroupReportToFile(string $workspace, string $reportId, array $body): string {
-    $endpoint = sprintf(self::PWBI_EXPORT_GROUP_TO_FILE_ENDPOINT, $workspace, $reportId);
+    $endpoint = sprintf($this->getApiRoot() . '/v1.0/myorg/groups/%s/reports/%s/ExportTo', $workspace, $reportId);
     return $this->connect('post', $endpoint, $body);
   }
 
@@ -198,7 +211,7 @@ class PowerBiClient implements ContainerInjectionInterface {
    *   Can throw a generic exception.
    */
   public function getGroupExportToFileStatus(string $workspace, string $reportId, string $exportId): string {
-    $endpoint = sprintf(self::PWBI_EXPORT_GROUP_TO_FILE_STATUS_ENDPOINT, $workspace, $reportId, $exportId);
+    $endpoint = sprintf($this->getApiRoot() . '/v1.0/myorg/groups/%s/reports/%s/exports/%s', $workspace, $reportId, $exportId);
     return $this->connect('get', $endpoint);
   }
 
@@ -223,7 +236,7 @@ class PowerBiClient implements ContainerInjectionInterface {
    *   Can throw a generic exception.
    */
   public function getGroupExportFile(string $workspace, string $reportId, string $exportId, string $filePath, string $filename): string {
-    $endpoint = sprintf(self::PWBI_GET_GROUP_FILE_ENDPOINT, $workspace, $reportId, $exportId);
+    $endpoint = sprintf($this->getApiRoot() . '/v1.0/myorg/groups/%s/reports/%s/exports/%s/file', $workspace, $reportId, $exportId);
     $filePath = $filePath . '/' . $filename;
     $fileRealPath = $this->fileSystem->realpath($filePath);
     $resource = fopen($fileRealPath, 'w+');
@@ -251,7 +264,7 @@ class PowerBiClient implements ContainerInjectionInterface {
    *   Can throw a generic exception.
    */
   public function getGroupReport(string $workspace, string $reportId): string {
-    $endpoint = sprintf(self::PWBI_GET_GROUP_REPORT, $workspace, $reportId);
+    $endpoint = sprintf($this->getApiRoot() . '/v1.0/myorg/groups/%s/reports/%s', $workspace, $reportId);
     return $this->connect('get', $endpoint);
   }
 
@@ -270,7 +283,7 @@ class PowerBiClient implements ContainerInjectionInterface {
    *   Can throw a generic exception.
    */
   public function getPages(string $workspace, string $reportId): string {
-    $endpoint = sprintf(self::PWBI_GET_GROUP_PAGES, $workspace, $reportId);
+    $endpoint = sprintf($this->getApiRoot() . '/v1.0/myorg/groups/%s/reports/%s/pages', $workspace, $reportId);
     return $this->connect('get', $endpoint);
   }
 
