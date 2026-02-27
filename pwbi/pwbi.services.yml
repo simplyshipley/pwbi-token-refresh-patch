@@ -7,7 +7,7 @@ services:
 
   pwbi_api.client:
     class: '\Drupal\pwbi\Api\PowerBiClient'
-    arguments: ['@state' ,'@logger.factory', '@http_client', '@oauth2_client.service', '@file_url_generator', '@file_system']
+    arguments: ['@state', '@logger.factory', '@http_client', '@oauth2_client.service', '@file_url_generator', '@file_system', '@config.factory']
 
   pwbi_embed.embed:
     class: '\Drupal\pwbi\PowerBiEmbed'

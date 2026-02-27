@@ -26,6 +26,14 @@ pwbi_embed.embed:
       type: string
       label: PowerBi Workspaces
 
+pwbi.settings:
+  type: config_object
+  label: Power BI module settings
+  mapping:
+    pwbi_api_endpoint:
+      type: string
+      label: Power BI API endpoint
+
 media.source.pwbi_embed_visual:
   type: media.source.field_aware
   label: '"PWBI Embed" media source configuration'
