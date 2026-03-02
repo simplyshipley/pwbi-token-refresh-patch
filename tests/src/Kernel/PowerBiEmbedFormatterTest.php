@@ -165,11 +165,11 @@ class PowerBiEmbedFormatterTest extends KernelTestBase {
   }
 
   /**
-   * Token refresh settings and CSRF token are present in drupalSettings.
+   * Token refresh settings are present in drupalSettings when enabled.
    *
-   * When token_refresh_enabled is TRUE the formatter must include
-   * token_refresh_enabled, token_refresh_minutes, and a non-empty
-   * token_refresh_csrf string so the JS can schedule and authorise refreshes.
+   * When token_refresh_enabled is TRUE the formatter must pass
+   * token_refresh_enabled and token_refresh_minutes to the JS so it can
+   * schedule refreshes at the correct interval.
    *
    * @covers ::buildEmbedConfiguration
    */
@@ -188,11 +188,9 @@ class PowerBiEmbedFormatterTest extends KernelTestBase {
 
     $this->assertTrue($settings['token_refresh_enabled']);
     $this->assertSame(10, $settings['token_refresh_minutes']);
-    // CSRF token must be present so the JS can append ?token=... to refresh
-    // requests (the route requires _csrf_token: TRUE).
-    $this->assertArrayHasKey('token_refresh_csrf', $settings);
-    $this->assertIsString($settings['token_refresh_csrf']);
-    $this->assertNotEmpty($settings['token_refresh_csrf']);
+    // No session-specific data (e.g. CSRF tokens) in drupalSettings — the
+    // route is a plain GET endpoint so the render cache is session-agnostic.
+    $this->assertArrayNotHasKey('token_refresh_csrf', $settings);
   }
 
   /**

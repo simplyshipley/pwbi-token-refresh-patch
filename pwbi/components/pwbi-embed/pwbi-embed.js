@@ -59,11 +59,7 @@
 
     const { workspaceId, id: reportId, datasetId } = embedSettings;
     const base = drupalSettings.path.baseUrl;
-    // Append the CSRF token required by the route's _csrf_token: TRUE setting.
-    const csrfParam = embedSettings.token_refresh_csrf
-      ? `&token=${encodeURIComponent(embedSettings.token_refresh_csrf)}`
-      : '';
-    const refreshUrl = `${base}pwbi/token-refresh/${workspaceId}/${reportId}?dataset_id=${encodeURIComponent(datasetId)}${csrfParam}`;
+    const refreshUrl = `${base}pwbi/token-refresh/${workspaceId}/${reportId}?dataset_id=${encodeURIComponent(datasetId)}`;
 
     try {
       const response = await fetch(refreshUrl, {
