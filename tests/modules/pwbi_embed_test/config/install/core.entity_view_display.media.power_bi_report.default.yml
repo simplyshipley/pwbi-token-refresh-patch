@@ -1,0 +1,26 @@
+uuid: fde6a66c-2c5e-4242-9d3d-fd4f839e3120
+langcode: en
+status: true
+dependencies:
+  config:
+    - field.field.media.power_bi_report.field_media_pwbi_embed_visual
+    - media.type.power_bi_report
+  module:
+    - pwbi
+id: media.power_bi_report.default
+targetEntityType: media
+bundle: power_bi_report
+mode: default
+content:
+  field_media_pwbi_embed_visual:
+    type: pwbi_embed_formatter
+    label: visually_hidden
+    settings: {  }
+    third_party_settings: {  }
+    weight: 0
+    region: content
+hidden:
+  created: true
+  name: true
+  thumbnail: true
+  uid: true

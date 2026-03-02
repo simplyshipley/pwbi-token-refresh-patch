@@ -1,0 +1,7 @@
+name: Power BI Settings Override Test
+type: module
+description: Testing module that overrides Power BI oauth2 client settings.
+core_version_requirement: ^10 || ^11
+package: Testing
+dependencies:
+  - pwbi:pwbi
