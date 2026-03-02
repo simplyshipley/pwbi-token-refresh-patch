@@ -3,3 +3,4 @@ token_refresh_enabled: false
 token_refresh_minutes: 10
 debug_enabled: false
 block_subscribe_heartbeat: false
+block_telemetry: false
