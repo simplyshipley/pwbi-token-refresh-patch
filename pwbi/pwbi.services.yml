@@ -19,7 +19,7 @@ services:
 
   pwbi.oauth_form_changes:
     class: '\Drupal\pwbi\Oauth2Form\FormChanges'
-    arguments: ['@config.factory', '@pwbi.cert_manager']
+    arguments: ['@pwbi.cert_manager']
 
   pwbi.pwbi_cache_response_subscriber:
     class: Drupal\pwbi\EventSubscriber\PwbiResponseSubscriber
