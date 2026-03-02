@@ -6,7 +6,6 @@ namespace Drupal\pwbi\Controller;
 
 use Drupal\Component\Serialization\Json;
 use Drupal\Core\Controller\ControllerBase;
-use Drupal\Core\Logger\LoggerChannelFactoryInterface;
 use Drupal\pwbi\Api\PowerBiClient;
 use Drupal\pwbi\PowerBiEmbed;
 use Symfony\Component\DependencyInjection\ContainerInterface;
@@ -23,7 +22,6 @@ class PwbiTokenRefreshController extends ControllerBase {
   public function __construct(
     protected readonly PowerBiClient $pwbiClient,
     protected readonly PowerBiEmbed $pwbiEmbed,
-    protected readonly LoggerChannelFactoryInterface $loggerChannelFactory,
   ) {}
 
   /**
@@ -34,7 +32,6 @@ class PwbiTokenRefreshController extends ControllerBase {
     return new static(
       $container->get('pwbi_api.client'),
       $container->get('pwbi_embed.embed'),
-      $container->get('logger.factory'),
     );
   }
 
@@ -86,7 +83,7 @@ class PwbiTokenRefreshController extends ControllerBase {
       $result = Json::decode($this->pwbiClient->getEmbedToken($body));
     }
     catch (\Throwable $e) {
-      $this->loggerChannelFactory->get('pwbi')->error(
+      $this->getLogger('pwbi')->error(
         'Embed token generation threw an exception for report @report: @message',
         ['@report' => $report_id, '@message' => $e->getMessage()]
       );
@@ -104,7 +101,7 @@ class PwbiTokenRefreshController extends ControllerBase {
     }
 
     if ($this->config('pwbi.settings')->get('debug_enabled')) {
-      $this->loggerChannelFactory->get('pwbi')->info(
+      $this->getLogger('pwbi')->info(
         'Embed token refreshed for report @report (workspace @workspace), expires @expiry.',
         [
           '@report'    => $report_id,
