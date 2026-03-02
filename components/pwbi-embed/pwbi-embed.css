@@ -1,0 +1,15 @@
+.pwbi-embed-container {
+  position: relative;
+}
+.pwbi-embed-container .pwbi-embed-overlay-top {
+   position: absolute;
+   width: 100%;
+ }
+.pwbi-embed-container .pwbi-embed-overlay-blocking {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+}
+.pwbi-embed-container .pwbi-embed-overlay-blocking .pwbi-disclaimer-banner {
+  height: 100%;
+}
