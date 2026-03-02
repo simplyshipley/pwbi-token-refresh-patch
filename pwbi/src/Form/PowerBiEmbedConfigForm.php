@@ -113,6 +113,13 @@ class PowerBiEmbedConfigForm extends ConfigFormBase {
       '#description' => $this->t('Intercepts the Power BI SDK\'s periodic /subscribe requests and returns a mock 200, eliminating console 405 errors. Safe to enable when reports use scheduled refresh rather than streaming/push datasets.'),
     ];
 
+    $form['block_telemetry'] = [
+      '#type' => 'checkbox',
+      '#title' => $this->t('Block telemetry tracking requests'),
+      '#default_value' => $pwbi_settings->get('block_telemetry') ?? FALSE,
+      '#description' => $this->t('Intercepts the Power BI SDK\'s /v2/track telemetry calls and returns a mock 200, preventing usage data from being sent to Microsoft. Enable if outbound telemetry is prohibited by your organization\'s policy.'),
+    ];
+
     return $form;
   }
 
@@ -152,6 +159,7 @@ class PowerBiEmbedConfigForm extends ConfigFormBase {
       ->set('token_refresh_minutes', (int) $form_state->getValue('token_refresh_minutes'))
       ->set('debug_enabled', (bool) $form_state->getValue('debug_enabled'))
       ->set('block_subscribe_heartbeat', (bool) $form_state->getValue('block_subscribe_heartbeat'))
+      ->set('block_telemetry', (bool) $form_state->getValue('block_telemetry'))
       ->save();
 
     // Clear the cached Service Principal OAuth2 token when the cloud endpoint
