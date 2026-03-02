@@ -84,8 +84,22 @@ class PowerBiEmbed implements ContainerInjectionInterface {
    *   Generic Exception can be thrown.
    */
   public function getEmbedDataFromApi(string $workspace, string $reportId): array {
+    $logger = $this->loggerFactory->get('pwbi');
+
     $reportInfo = Json::decode($this->pwbiClient->getGroupReport($workspace, $reportId));
+    if (!is_array($reportInfo) || !empty($reportInfo['error'])) {
+      $msg = is_array($reportInfo) ? ($reportInfo['error']['message'] ?? 'unknown API error') : 'invalid response';
+      $logger->error('Power BI getGroupReport failed for report @id: @msg', ['@id' => $reportId, '@msg' => $msg]);
+      return [];
+    }
+
     $pages = Json::decode($this->pwbiClient->getPages($workspace, $reportId));
+    if (!is_array($pages) || empty($pages['value'])) {
+      $msg = is_array($pages) ? ($pages['error']['message'] ?? 'no pages returned') : 'invalid response';
+      $logger->error('Power BI getPages failed for report @id: @msg', ['@id' => $reportId, '@msg' => $msg]);
+      return [];
+    }
+
     $embedTokenBody = [
       'datasets' => [
         ['id' => $reportInfo['datasetId']],
@@ -96,6 +110,12 @@ class PowerBiEmbed implements ContainerInjectionInterface {
     ];
 
     $embedToken = Json::decode($this->pwbiClient->getEmbedToken($embedTokenBody));
+    if (!is_array($embedToken) || empty($embedToken['token'])) {
+      $msg = is_array($embedToken) ? ($embedToken['error']['message'] ?? 'no token returned') : 'invalid response';
+      $logger->error('Power BI getEmbedToken failed for report @id: @msg', ['@id' => $reportId, '@msg' => $msg]);
+      return [];
+    }
+
     $result = [
       'pageName' => $pages['value'][0]['name'],
       'visualName' => $pages['value'][0]['displayName'],
