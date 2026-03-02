@@ -1,7 +1,0 @@
-parameters:
-  pwbi_purge.skip_procedural_hook_scan: true
-
-services:
-  Drupal\pwbi_purge\Hook\PurgeHooks:
-    class: Drupal\pwbi_purge\Hook\PurgeHooks
-    autowire: true

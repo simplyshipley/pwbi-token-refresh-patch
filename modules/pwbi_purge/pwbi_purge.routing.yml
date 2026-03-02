@@ -1,7 +1,0 @@
-pwbi_purge.settings:
-  path: '/admin/config/pwbi/pwbi_purge'
-  defaults:
-    _form: '\Drupal\pwbi_purge\Form\PowerBiPurgeSettingsForm'
-    _title: 'Power Bi purge'
-  requirements:
-    _permission: 'configure pwbi'

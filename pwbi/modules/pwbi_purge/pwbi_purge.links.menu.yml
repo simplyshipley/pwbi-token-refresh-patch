@@ -1,5 +1,0 @@
-pwbi_purge.settings:
-  title: 'PowerBI purge settings'
-  parent: pwbi.settings
-  description: 'Configure PowerBi purge.'
-  route_name: pwbi_purge.settings
