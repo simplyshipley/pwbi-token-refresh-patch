@@ -16,7 +16,6 @@
       "ext-openssl": "*"
     },
     "require-dev": {
-      "drupal/purge": "^3.6",
       "drupal/http_request_mock": "^1.2"
     }
 }

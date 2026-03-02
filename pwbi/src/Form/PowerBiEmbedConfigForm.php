@@ -113,9 +113,14 @@ class PowerBiEmbedConfigForm extends ConfigFormBase {
    * {@inheritdoc}
    */
   public function validateForm(array &$form, FormStateInterface $form_state): void {
-    $minutes = (int) $form_state->getValue('token_refresh_minutes');
-    if ($minutes < 1 || $minutes > 55) {
-      $form_state->setErrorByName('token_refresh_minutes', $this->t('Minutes must be between 1 and 55.'));
+    // Only validate the minutes field when token refresh is enabled; the field
+    // is hidden (via #states) when disabled, and the submitted value may be
+    // empty or out-of-range from a previous save with a different setting.
+    if ($form_state->getValue('token_refresh_enabled')) {
+      $minutes = (int) $form_state->getValue('token_refresh_minutes');
+      if ($minutes < 1 || $minutes > 55) {
+        $form_state->setErrorByName('token_refresh_minutes', $this->t('Minutes must be between 1 and 55.'));
+      }
     }
     parent::validateForm($form, $form_state);
   }

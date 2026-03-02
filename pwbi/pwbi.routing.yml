@@ -29,7 +29,6 @@ pwbi.token_refresh:
     _title: 'Power BI token refresh'
   requirements:
     _permission: 'view pwbi embed token'
+    _csrf_token: 'TRUE'
     workspace_id: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
     report_id: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
-  options:
-    no_cache: TRUE

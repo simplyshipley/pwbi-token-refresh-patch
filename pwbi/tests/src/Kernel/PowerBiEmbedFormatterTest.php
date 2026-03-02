@@ -70,45 +70,6 @@ class PowerBiEmbedFormatterTest extends KernelTestBase {
    * @covers ::viewElements
    */
   public function testViewElements(): void {
-    $fixture = $this->createFixture();
-    $media = $fixture['media'];
-    $display = $fixture['display'];
-
-    // Token will expire in 300 seconds.
-    $request_time = \Drupal::time()->getRequestTime() + 300;
-    \Drupal::state()->set('api_powerbi_com_token_expire', $request_time);
-
-    /** @var \Drupal\Core\Entity\Entity\EntityViewDisplay $display */
-    $build = $display->build($media);
-    $this->assertNotNull($build['embed']);
-    $renderer = \Drupal::service('renderer');
-    $renderer->renderInIsolation($build['embed']);
-
-    // @todo Assert other elements and output HTML.
-    // Field contains the correct cache.
-    $this->assertSame(
-      [
-        'contexts' => [
-          'languages:language_interface',
-          'theme',
-          'user.permissions',
-        ],
-        'tags' => [
-          'pwbi_embed',
-        ],
-        'max-age' => 300,
-      ],
-      $build['embed']['#cache'],
-    );
-  }
-
-  /**
-   * Create the fixture to test the formatting of a pwbi_embed element.
-   *
-   * @return array
-   *   The array of created entities.
-   */
-  protected function createFixture(): array {
     // Create field configuration and content.
     $this->createMediaType('pwbi_embed_visual', ['id' => 'document']);
     $field_storage = FieldStorageConfig::create([
@@ -159,11 +120,32 @@ class PowerBiEmbedFormatterTest extends KernelTestBase {
     ]);
     $this->setCurrentUser($user);
 
-    return [
-      'media' => $media,
-      'display' => $display,
-      'user' => $user,
-    ];
+    // Token will expire in 300 seconds.
+    $request_time = \Drupal::time()->getCurrentTime() + 300;
+    \Drupal::state()->set('api_powerbi_com_token_expire', $request_time);
+
+    /** @var \Drupal\Core\Entity\Entity\EntityViewDisplay $display */
+    $build = $display->build($media);
+    $this->assertNotNull($build['embed']);
+    $renderer = \Drupal::service('renderer');
+    $renderer->renderInIsolation($build['embed']);
+
+    // @todo Assert other elements and output HTML.
+    // Field contains the correct cache.
+    $this->assertSame(
+      [
+        'contexts' => [
+          'languages:language_interface',
+          'theme',
+          'user.permissions',
+        ],
+        'tags' => [
+          'pwbi_embed',
+        ],
+        'max-age' => 300,
+      ],
+      $build['embed']['#cache'],
+    );
   }
 
 }

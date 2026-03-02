@@ -6,6 +6,7 @@ namespace Drupal\pwbi\Plugin\Field\FieldFormatter;
 
 use Drupal\breakpoint\BreakpointManager;
 use Drupal\Component\Datetime\TimeInterface;
+use Drupal\Core\Access\CsrfTokenGenerator;
 use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Config\ImmutableConfig;
 use Drupal\Core\Datetime\DrupalDateTime;
@@ -47,6 +48,7 @@ class PowerBiEmbedFormatter extends FormatterBase {
     protected EventDispatcherInterface $dispatcher,
     protected TimeInterface $time,
     protected readonly ConfigFactoryInterface $configFactory,
+    protected readonly CsrfTokenGenerator $csrfToken,
   ) {
     parent::__construct($plugin_id, $plugin_definition, $field_definition, $settings, $label, $view_mode, $third_party_settings);
   }
@@ -69,6 +71,7 @@ class PowerBiEmbedFormatter extends FormatterBase {
       $container->get('event_dispatcher'),
       $container->get('datetime.time'),
       $container->get('config.factory'),
+      $container->get('csrf_token'),
     );
   }
 
@@ -225,6 +228,21 @@ class PowerBiEmbedFormatter extends FormatterBase {
     $embed_options['token_refresh_enabled'] = (bool) ($pwbi_settings->get('token_refresh_enabled') ?? FALSE);
     $embed_options['token_refresh_minutes'] = (int) ($pwbi_settings->get('token_refresh_minutes') ?? 10);
     $embed_options['debug_enabled'] = (bool) ($pwbi_settings->get('debug_enabled') ?? FALSE);
+
+    // Generate a per-session CSRF token for the token refresh endpoint.
+    // The route has _csrf_token: TRUE, so the JS must append ?token=... to
+    // each refresh request. The token is session-specific; render caches for
+    // refresh-enabled embeds already have max-age:0 so stale tokens can't
+    // be served to a different user from cache.
+    if ($embed_options['token_refresh_enabled']) {
+      $workspace = $embed_options['workspaceId'] ?? '';
+      $report = $embed_options['id'] ?? '';
+      if ($workspace && $report) {
+        $embed_options['token_refresh_csrf'] = $this->csrfToken->get(
+          "pwbi/token-refresh/{$workspace}/{$report}"
+        );
+      }
+    }
 
     return $embed_options;
   }

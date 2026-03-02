@@ -116,6 +116,23 @@ class PowerBiClient implements ContainerInjectionInterface {
       $this->loggerFactory->get('pwbi_api')->error('Failed to complete task "@error"', [
         '@error' => $e->getMessage(),
       ]);
+      // Return the response body when available so callers can JSON-decode the
+      // Power BI error object ({"error":{"code":"...","message":"..."}}).
+      // Fall back to the Guzzle summary (which includes HTTP status + URL) when
+      // the body is empty — an empty 403 body typically means the tenant-level
+      // "Allow service principals to use Power BI APIs" setting is disabled.
+      if ($e->hasResponse()) {
+        $body = (string) $e->getResponse()->getBody();
+        if ($body !== '') {
+          return $body;
+        }
+        // Empty body — encode HTTP status so callers can surface it.
+        return json_encode([
+          'httpError' => $e->getResponse()->getStatusCode(),
+          'httpReason' => $e->getResponse()->getReasonPhrase(),
+          'message' => $e->getMessage(),
+        ]);
+      }
       return $e->getMessage();
     }
     return $response->getBody()->getContents();

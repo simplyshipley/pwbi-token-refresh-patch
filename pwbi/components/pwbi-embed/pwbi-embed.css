@@ -2,9 +2,9 @@
   position: relative;
 }
 .pwbi-embed-container .pwbi-embed-overlay-top {
-  position: absolute;
-  width: 100%;
-}
+   position: absolute;
+   width: 100%;
+ }
 .pwbi-embed-container .pwbi-embed-overlay-blocking {
   position: absolute;
   width: 100%;

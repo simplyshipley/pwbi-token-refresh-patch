@@ -6,3 +6,8 @@ package: Testing
 dependencies:
   - http_request_mock:http_request_mock
   - pwbi:pwbi
+
+# Information added by Drupal.org packaging script on 2025-03-31
+version: '2.0.3'
+project: 'pwbi'
+datestamp: 1743405357

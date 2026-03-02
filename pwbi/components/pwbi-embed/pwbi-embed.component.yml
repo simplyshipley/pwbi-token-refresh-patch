@@ -12,7 +12,7 @@ props:
       title: Report id
       description: Power bi report id.
       examples:
-        - sdfuern23421.
+        - sdfuernÇADSFr23421.
       type: string
     report_width:
       title: Report width
@@ -32,13 +32,13 @@ slots:
     description: Style for media breakpoints.
     required: true
   overlay_top:
-    title: Overlay message
-    description: Block message at the top of the pwbi container.
-    required: false
+      title: Overlay message
+      description: Block message at the top of the pwbi container.
+      required: false
   overlay_blocking:
     title: Blocking overlay
     description: Block message blocking the pwbi container.
     required: false
 libraryOverrides:
   dependencies:
-    - pwbi/pwbi_client
+      - pwbi/pwbi_client

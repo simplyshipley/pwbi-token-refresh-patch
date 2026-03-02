@@ -46,10 +46,7 @@ class CertificateManager implements ContainerInjectionInterface {
    */
   public function definedInSettings(string $pluginId): bool {
     $cert_file = $this->configFactory->get('oauth2_client.oauth2_client.' . $pluginId)->get('third_party_settings.pwbi.cert_file');
-    if (!is_string($cert_file) || $cert_file === '') {
-      return FALSE;
-    }
-    if (file_exists($cert_file)) {
+    if ($cert_file !== NULL && file_exists($cert_file)) {
       return TRUE;
     }
     return FALSE;
@@ -61,16 +58,16 @@ class CertificateManager implements ContainerInjectionInterface {
    * @param string $pluginId
    *   The plugin to check.
    *
-   * @return string
+   * @return array|mixed|null
    *   The path to the file.
    */
-  public function getCertificatePath(string $pluginId): string {
+  public function getCertificatePath(string $pluginId) {
     $cert_file = $this->configFactory->get('oauth2_client.oauth2_client.' . $pluginId)->get('third_party_settings.pwbi.cert_file');
-    if (is_string($cert_file) && file_exists($cert_file)) {
+    if (file_exists($cert_file)) {
       return $cert_file;
     }
     $cert_file_managed = $this->entityTypeManager->getStorage('file')->load($cert_file);
-    return $cert_file_managed?->getFileUri() ?? '';
+    return $cert_file_managed->getFileUri();
   }
 
   /**

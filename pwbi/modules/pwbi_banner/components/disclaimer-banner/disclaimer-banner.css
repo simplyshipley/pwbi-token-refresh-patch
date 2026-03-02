@@ -1,20 +1,20 @@
 .pwbi-disclaimer-banner {
-  border: 1px solid #d3d8f2;
-  border-radius: 4px;
   padding: 10px;
   background-color: #e9ecf9;
-  font-family: "font/family/Body", sans-serif;
+  font-family: font/family/Body;
+  font-weight: font/weight/Regular;
   font-size: 16px;
-  font-weight: 400;
   line-height: 26px;
+  border: 1px solid #D3D8F2;
+  border-radius: 4px;
 }
-.pwbi-disclaimer-banner .pwbi-disclaimer-wrapper {
+ .pwbi-disclaimer-banner .pwbi-disclaimer-wrapper {
   display: flex;
 }
 .pwbi-disclaimer-banner .pwbi-disclaimer-wrapper .pwbi-disclaimer-img {
+  margin: auto;
   display: block;
   min-width: 20px;
-  margin: auto;
 }
 .pwbi-disclaimer-banner .pwbi-disclaimer-wrapper .pwbi-disclaimer-img img {
   padding-right: 10px;
@@ -23,16 +23,16 @@
   text-align: center;
 }
 .pwbi-disclaimer-banner .pwbi-disclaimer-accept button {
+  font-family: font/family/Body;
+  font-weight: font/weight/Regular;
   display: inline-block;
-  margin: 0;
-  padding: 1rem 2rem;
-  border: 1px solid #d3d8f2;
-  text-align: center;
-  text-decoration: none;
-  font-family: "font/family/Body", sans-serif;
-  font-weight: 400;
+  border: 1px solid #D3D8F2;
   border-radius: 4px;
-  background: #fff;
+  padding: 1rem 2rem;
+  margin: 0;
+  text-decoration: none;
+  background: #ffffff;
+  text-align: center;
   -webkit-appearance: none;
   -moz-appearance: none;
 }

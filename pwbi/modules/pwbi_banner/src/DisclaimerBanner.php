@@ -91,7 +91,7 @@ class DisclaimerBanner implements ContainerInjectionInterface {
   }
 
   /**
-   * Check if disclaimer banner is configured to be shown as a block.
+   * Check if disclaimer banner is configured to be shown blockng .
    *
    * @return bool
    *   TRUE if it is shown as a block.

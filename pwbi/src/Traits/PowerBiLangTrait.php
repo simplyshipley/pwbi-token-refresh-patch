@@ -19,7 +19,7 @@ trait PowerBiLangTrait {
    *   PowerBi langcode.
    */
   public function getPowerBiLangcode(string $drupal_langcode): string {
-    $lang_mapping = [
+    $lang_mappping = [
       "ar" => "ar-SA",
       "bg" => "bg-BG",
       "ca" => "ca-ES",
@@ -64,7 +64,7 @@ trait PowerBiLangTrait {
       "zn-hans" => "zh-CN",
       "zn-hant" => "zh-TW",
     ];
-    return $lang_mapping[$drupal_langcode] ?? "en-US";
+    return $lang_mappping[$drupal_langcode] ?? "en-US";
   }
 
 }

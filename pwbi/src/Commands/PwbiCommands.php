@@ -86,7 +86,7 @@ class PwbiCommands extends DrushCommands {
     try {
       $token = $this->auth->getAccessToken('pwbi_service_principal');
     }
-    catch (\Exception $e) {
+    catch (\Throwable $e) {
       $this->io()->error('Failed to obtain OAuth2 token: ' . $e->getMessage());
       return;
     }
@@ -379,7 +379,7 @@ class PwbiCommands extends DrushCommands {
     try {
       $raw = $this->pwbiClient->getEmbedToken($body);
     }
-    catch (\Exception $e) {
+    catch (\Throwable $e) {
       $this->io()->error('Embed token request failed: ' . $e->getMessage());
       return;
     }
@@ -437,8 +437,8 @@ class PwbiCommands extends DrushCommands {
   /**
    * Print a hint if an API error message suggests an OAuth2 audience mismatch.
    *
-   * Power BI returns 401 with error messages containing "audience", "token",
-   * or "unauthorized" when the Bearer token was issued for a different cloud
+   * Power BI returns 401 with error messages containing "audience" or
+   * "unauthorized" when the Bearer token was issued for a different cloud
    * (e.g. a commercial token used against the GCC API endpoint). This helper
    * surfaces the fix steps inline so the developer doesn't have to guess.
    *
@@ -447,7 +447,7 @@ class PwbiCommands extends DrushCommands {
    */
   protected function maybeHintAudienceMismatch(string $msg): void {
     $lower = strtolower($msg);
-    if (!str_contains($lower, 'audience') && !str_contains($lower, 'unauthorized') && !str_contains($lower, 'token')) {
+    if (!str_contains($lower, 'audience') && !str_contains($lower, 'unauthorized')) {
       return;
     }
 
@@ -497,6 +497,9 @@ class PwbiCommands extends DrushCommands {
     $storage = $this->entityTypeManager->getStorage('media');
 
     foreach (array_keys($media_fields) as $field_name) {
+      // accessCheck(FALSE): Drush commands run as a privileged server process,
+      // not as a web request. Bypassing entity access is intentional here —
+      // the command is only available to users with Drush shell access anyway.
       $ids = $storage->getQuery()
         ->accessCheck(FALSE)
         ->condition($field_name . '.workspace_id', '', '<>')
