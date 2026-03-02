@@ -12,10 +12,20 @@ A government website (USPS OIG) runs a Drupal site using the `pwbi` module (v2.x
 - Module source cloned from `https://git.drupalcode.org/project/pwbi.git` (branch 2.x) into `pwbi/`
 - `pwbi/README.md` updated with documentation for both new features (GCC endpoint config, automatic token refresh)
 - Architecture fully designed and reviewed by multi-agent review (decisions locked, see below)
-- This handoff document written
+- **All 9 files from the spec implemented** (see "Complete Specification" below for details)
+- **Drush commands added** — `pwbi:auth-check` and `pwbi:token-refresh` (Files 10–11)
+- Both DDEV installation and patch repo are in sync
 
-**Not done (next session):**
-- All 9 file modifications/creations described in "The Patch — Complete Specification" below
+**JS implementation note:**
+The `pwbi-embed.js` implementation (File 9) was refined during implementation to align exactly with Microsoft's
+`setInterval`-based token refresh pattern (30s polling + `visibilitychange`), replacing the original `setTimeout`
+approach in the spec. The live implementation uses `checkTokenAndUpdate` / `updateToken` function names that
+mirror Microsoft's reference docs. The spec in this document still shows the original `setTimeout` design —
+the live files (`pwbi/components/pwbi-embed/pwbi-embed.js`) are authoritative.
+
+**Pending:**
+- Apply patch to production deployment (pending OIG change management process)
+- Submit upstream to drupal.org/project/pwbi if appropriate
 
 ---
 
@@ -631,6 +641,40 @@ async function performTokenRefresh(embedContainer, embedSettings, powerbiClient)
   }
 }
 ```
+
+---
+
+---
+
+### File 10: `pwbi/src/Commands/PwbiCommands.php` — NEW FILE (Drush diagnostic commands)
+
+Two Drush commands for verifying the token refresh chain from the CLI:
+
+- **`drush pwbi:auth-check`** — Verifies the Azure AD OAuth2 service principal handshake. Shows token
+  truncation, expiry time, and whether the cached token is already stale. Run this first when
+  troubleshooting — if this fails, no embed tokens can be generated.
+- **`drush pwbi:token-refresh <workspace_id> <report_id> <dataset_id>`** — Calls `getEmbedToken()` through
+  the full server-side chain (OAuth2 → Power BI REST API → embed token). Shows the resulting token
+  (truncated) and expiry. Confirms the GCC endpoint is being used correctly.
+
+Requires Drush 12 (attribute-based command registration). File lives at `pwbi/src/Commands/PwbiCommands.php`.
+
+---
+
+### File 11: `pwbi/drush.services.yml` — NEW FILE (Drush service registration)
+
+```yaml
+services:
+  pwbi.commands:
+    class: Drupal\pwbi\Commands\PwbiCommands
+    arguments:
+      - '@pwbi_api.client'
+      - '@oauth2_client.service'
+    tags:
+      - { name: drush.command }
+```
+
+After adding `drush.services.yml`, run `drush cr` to rebuild the container so Drush discovers the new commands.
 
 ---
 
