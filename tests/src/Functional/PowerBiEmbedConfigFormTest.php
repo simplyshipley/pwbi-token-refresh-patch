@@ -60,12 +60,10 @@ class PowerBiEmbedConfigFormTest extends BrowserTestBase {
     $this->assertSession()->statusCodeEquals(200);
 
     $this->submitForm([
-      'pwbi_workspaces'          => 'a1b2c3d4-e5f6-7890-abcd-ef1234567890|Test Workspace',
-      'token_refresh_enabled'    => TRUE,
-      'token_refresh_minutes'    => 15,
-      'debug_enabled'            => TRUE,
-      'block_subscribe_heartbeat'=> TRUE,
-      'block_telemetry'          => TRUE,
+      'pwbi_workspaces'       => 'a1b2c3d4-e5f6-7890-abcd-ef1234567890|Test Workspace',
+      'token_refresh_enabled' => TRUE,
+      'token_refresh_minutes' => 15,
+      'debug_enabled'         => TRUE,
     ], 'Save configuration');
 
     $this->assertSession()->statusCodeEquals(200);
@@ -75,8 +73,6 @@ class PowerBiEmbedConfigFormTest extends BrowserTestBase {
     $this->assertTrue($config->get('token_refresh_enabled'));
     $this->assertSame(15, $config->get('token_refresh_minutes'));
     $this->assertTrue($config->get('debug_enabled'));
-    $this->assertTrue($config->get('block_subscribe_heartbeat'));
-    $this->assertTrue($config->get('block_telemetry'));
   }
 
   /**

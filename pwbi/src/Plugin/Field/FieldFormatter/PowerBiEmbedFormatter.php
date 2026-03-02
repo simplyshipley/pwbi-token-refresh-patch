@@ -228,8 +228,6 @@ class PowerBiEmbedFormatter extends FormatterBase {
     $embed_options['token_refresh_enabled'] = (bool) ($pwbi_settings->get('token_refresh_enabled') ?? FALSE);
     $embed_options['token_refresh_minutes'] = (int) ($pwbi_settings->get('token_refresh_minutes') ?? 10);
     $embed_options['debug_enabled'] = (bool) ($pwbi_settings->get('debug_enabled') ?? FALSE);
-    $embed_options['block_subscribe_heartbeat'] = (bool) ($pwbi_settings->get('block_subscribe_heartbeat') ?? FALSE);
-    $embed_options['block_telemetry'] = (bool) ($pwbi_settings->get('block_telemetry') ?? FALSE);
 
     // Generate a per-session CSRF token for the token refresh endpoint.
     // The route has _csrf_token: TRUE, so the JS must append ?token=... to

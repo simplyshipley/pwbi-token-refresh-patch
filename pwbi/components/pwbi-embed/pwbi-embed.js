@@ -166,55 +166,6 @@
       });
     },
     setEvents(settings, powerbiClient) {
-      // Optionally intercept Power BI SDK requests that produce noisy errors.
-      //
-      // /subscribe  — SDK push-update channel. On GCC the routing cluster
-      //               redirects POST→GET, producing a 405 the SDK can't
-      //               recover from. Safe to suppress for scheduled-refresh
-      //               reports (non-streaming datasets).
-      //
-      // /v2/track   — Microsoft telemetry. Sends usage data (load times,
-      //               interactions, errors) to Microsoft servers. Block if
-      //               outbound telemetry is prohibited by policy.
-      //
-      // The guard (_pwbiFetchPatched) prevents double-patching across multiple
-      // attach() calls or multiple embeds on the same page.
-      const firstEmbed = Object.values(settings.pwbi_embed)[0] ?? {};
-      const blockSubscribe = firstEmbed.block_subscribe_heartbeat;
-      const blockTelemetry = firstEmbed.block_telemetry;
-
-      if ((blockSubscribe || blockTelemetry) && !window._pwbiFetchPatched) {
-        window._pwbiFetchPatched = true;
-        const originalFetch = window.fetch;
-        window.fetch = function(resource, options) {
-          let url = '';
-          if (typeof resource === 'string') {
-            url = resource;
-          } else if (resource instanceof URL) {
-            url = resource.href;
-          } else if (resource && typeof resource.url === 'string') {
-            url = resource.url;
-          }
-          // Only intercept external requests — never Drupal-internal ones.
-          const base = drupalSettings.path.baseUrl;
-          if (!url.startsWith(base)) {
-            if (blockSubscribe && url.includes('/subscribe')) {
-              return Promise.resolve(new Response('{}', {
-                status: 200,
-                headers: { 'Content-Type': 'application/json' },
-              }));
-            }
-            if (blockTelemetry && url.includes('/v2/track')) {
-              return Promise.resolve(new Response('{}', {
-                status: 200,
-                headers: { 'Content-Type': 'application/json' },
-              }));
-            }
-          }
-          return originalFetch.apply(this, arguments);
-        };
-      }
-
       const powerBiEmbed = {
         callback: this.runEmbeds,
         pwbi_embed: settings.pwbi_embed,
