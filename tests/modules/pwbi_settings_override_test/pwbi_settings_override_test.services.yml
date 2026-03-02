@@ -1,0 +1,8 @@
+services:
+  pwbi_settings_override_test.config_override:
+    class: Drupal\pwbi_settings_override_test\PwbiSettingsOverrideConfigFactoryOverride
+    arguments:
+      - '@module_handler'
+      - '@state'
+    tags:
+      - { name: config.factory.override }

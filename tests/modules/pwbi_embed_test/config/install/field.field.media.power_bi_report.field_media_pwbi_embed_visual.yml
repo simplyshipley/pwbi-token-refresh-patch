@@ -1,0 +1,21 @@
+uuid: 425d5582-0d58-48c0-9ec6-54fb0dd6c021
+langcode: en
+status: true
+dependencies:
+  config:
+    - field.storage.media.field_media_pwbi_embed_visual
+    - media.type.power_bi_report
+  module:
+    - pwbi
+id: media.power_bi_report.field_media_pwbi_embed_visual
+field_name: field_media_pwbi_embed_visual
+entity_type: media
+bundle: power_bi_report
+label: 'PowerBi embed'
+description: ''
+required: true
+translatable: true
+default_value: {  }
+default_value_callback: ''
+settings: {  }
+field_type: pwbi_embed
