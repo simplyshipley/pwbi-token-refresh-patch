@@ -96,6 +96,15 @@ class PwbiTokenRefreshController extends ControllerBase {
       ]);
     }
 
+    $this->logger('pwbi')->info(
+      'Embed token refreshed for report @report (workspace @workspace), expires @expiry.',
+      [
+        '@report'    => $report_id,
+        '@workspace' => $workspace_id,
+        '@expiry'    => $result['expiration'] ?? 'unknown',
+      ]
+    );
+
     return new JsonResponse([
       'token'      => $result['token'],
       'expiration' => $result['expiration'],
