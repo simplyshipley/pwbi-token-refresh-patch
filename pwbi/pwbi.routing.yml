@@ -28,6 +28,8 @@ pwbi.token_refresh:
     _controller: '\Drupal\pwbi\Controller\PwbiTokenRefreshController::refresh'
     _title: 'Power BI token refresh'
   requirements:
-    _permission: 'access content'
+    _permission: 'view pwbi embed token'
     workspace_id: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
     report_id: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+  options:
+    no_cache: TRUE
