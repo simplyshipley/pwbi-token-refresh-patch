@@ -7,6 +7,7 @@ namespace Drupal\pwbi\Commands;
 use Drupal\Component\Serialization\Json;
 use Drupal\Core\Entity\EntityFieldManagerInterface;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
+use Drupal\Core\KeyValueStore\KeyValueFactoryInterface;
 use Drupal\Core\State\StateInterface;
 use Drupal\oauth2_client\Service\Oauth2ClientService;
 use Drupal\pwbi\Api\PowerBiClient;
@@ -32,6 +33,7 @@ class PwbiCommands extends DrushCommands {
     protected readonly EntityTypeManagerInterface $entityTypeManager,
     protected readonly EntityFieldManagerInterface $entityFieldManager,
     protected readonly StateInterface $state,
+    protected readonly KeyValueFactoryInterface $keyValueFactory,
   ) {
     parent::__construct();
   }
@@ -47,6 +49,7 @@ class PwbiCommands extends DrushCommands {
       $container->get('entity_type.manager'),
       $container->get('entity_field.manager'),
       $container->get('state'),
+      $container->get('keyvalue'),
     );
   }
 
@@ -96,7 +99,12 @@ class PwbiCommands extends DrushCommands {
     $audienceWarning = FALSE;
     $parts = explode('.', $tokenValue);
     if (count($parts) === 3) {
-      $payloadJson = base64_decode(strtr($parts[1], '-_', '+/'), TRUE);
+      // JWT segments use URL-safe base64 with padding stripped. Re-add padding
+      // before decoding — base64_decode strict mode rejects bad chars but does
+      // not catch missing padding, which causes silent truncation.
+      $segment = strtr($parts[1], '-_', '+/');
+      $segment = str_pad($segment, strlen($segment) + (4 - strlen($segment) % 4) % 4, '=');
+      $payloadJson = base64_decode($segment, TRUE);
       $payload = ($payloadJson !== FALSE) ? json_decode($payloadJson, TRUE) : NULL;
       if (is_array($payload)) {
         $audience = (string) ($payload['aud'] ?? 'unknown');
@@ -254,8 +262,8 @@ class PwbiCommands extends DrushCommands {
     }
     else {
       // IDs were provided as arguments — check if we have a cached dataset_id.
-      $meta = $this->state->get(PowerBiEmbed::PWBI_REPORT_META, []);
-      $cached_dataset_id = $meta[$report_id]['dataset_id'] ?? '';
+      $entry = $this->keyValueFactory->get(PowerBiEmbed::PWBI_REPORT_META)->get($report_id);
+      $cached_dataset_id = $entry['dataset_id'] ?? '';
     }
 
     // Validate both IDs are proper UUIDs before hitting the API.
@@ -407,8 +415,8 @@ class PwbiCommands extends DrushCommands {
       return [];
     }
 
-    // Load the per-report metadata cache written by PowerBiEmbed::getEmbedDataFromApi().
-    $meta = $this->state->get(PowerBiEmbed::PWBI_REPORT_META, []);
+    // Load per-report metadata from the KeyValueStore (one row per report).
+    $meta_store = $this->keyValueFactory->get(PowerBiEmbed::PWBI_REPORT_META);
 
     $reports = [];
     $storage = $this->entityTypeManager->getStorage('media');
@@ -437,12 +445,13 @@ class PwbiCommands extends DrushCommands {
         }
 
         $report_id = (string) $value['report_id'];
+        $entry = $meta_store->get($report_id);
         $reports[] = [
           'media_id'     => $entity->id(),
           'label'        => $entity->label() ?? '(no label)',
           'workspace_id' => (string) $value['workspace_id'],
           'report_id'    => $report_id,
-          'dataset_id'   => $meta[$report_id]['dataset_id'] ?? '',
+          'dataset_id'   => $entry['dataset_id'] ?? '',
         ];
       }
     }

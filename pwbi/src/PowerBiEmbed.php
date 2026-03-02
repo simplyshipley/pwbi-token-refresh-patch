@@ -6,6 +6,7 @@ namespace Drupal\pwbi;
 
 use Drupal\Component\Serialization\Json;
 use Drupal\Core\DependencyInjection\ContainerInjectionInterface;
+use Drupal\Core\KeyValueStore\KeyValueFactoryInterface;
 use Drupal\Core\Logger\LoggerChannelFactoryInterface;
 use Drupal\Core\State\StateInterface;
 use Drupal\pwbi\Api\PowerBiClient;
@@ -19,11 +20,12 @@ class PowerBiEmbed implements ContainerInjectionInterface {
   public const PWBI_EMBED_SETTINGS = 'pwbi_embed_settings';
 
   /**
-   * State API key for the per-report metadata cache (dataset_id, workspace_id).
+   * KeyValueStore collection name for the per-report metadata cache.
    *
-   * Written by getEmbedDataFromApi() on every successful page render so that
-   * drush pwbi:token-refresh can look up the dataset_id without calling
-   * getGroupReport() again.
+   * Each report_id is stored as its own key in this collection so writes are
+   * not amplified across all reports. Written by getEmbedDataFromApi() on
+   * every successful embed so drush pwbi:token-refresh can look up dataset_id
+   * without calling getGroupReport() again.
    */
   public const PWBI_REPORT_META = 'pwbi_report_meta';
 
@@ -31,6 +33,7 @@ class PowerBiEmbed implements ContainerInjectionInterface {
     protected readonly StateInterface $state,
     protected readonly LoggerChannelFactoryInterface $loggerFactory,
     protected readonly PowerBiClient $pwbiClient,
+    protected readonly KeyValueFactoryInterface $keyValueFactory,
   ) {}
 
   /**
@@ -42,6 +45,7 @@ class PowerBiEmbed implements ContainerInjectionInterface {
       $container->get('state'),
       $container->get('logger.factory'),
       $container->get('pwbi_api.client'),
+      $container->get('keyvalue'),
     );
   }
 
@@ -101,15 +105,15 @@ class PowerBiEmbed implements ContainerInjectionInterface {
       'datasetId' => $reportInfo['datasetId'] ?? NULL,
     ];
 
-    // Cache dataset_id so drush pwbi:token-refresh can skip getGroupReport().
+    // Cache per-report metadata so drush pwbi:token-refresh can skip
+    // getGroupReport(). Each report gets its own KeyValueStore key to avoid
+    // read-modify-write amplification across all reports.
     if (!empty($result['datasetId'])) {
-      $meta = $this->state->get(self::PWBI_REPORT_META, []);
-      $meta[$reportId] = [
+      $this->keyValueFactory->get(self::PWBI_REPORT_META)->set($reportId, [
         'dataset_id'   => $result['datasetId'],
         'workspace_id' => $workspace,
         'cached_at'    => time(),
-      ];
-      $this->state->set(self::PWBI_REPORT_META, $meta);
+      ]);
     }
 
     return $result;

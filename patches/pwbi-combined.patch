@@ -1848,7 +1848,7 @@ index 5c2b2e7..2eeb878 100644
  
  }
 diff --git a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php b/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
-index 0876f69..2856a64 100644
+index 0876f69..f643fab 100644
 --- a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
 +++ b/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
 @@ -5,6 +5,8 @@ declare(strict_types=1);
@@ -1885,7 +1885,7 @@ index 0876f69..2856a64 100644
      );
    }
  
-@@ -85,10 +91,10 @@ class PowerBiEmbedFormatter extends FormatterBase {
+@@ -85,10 +91,18 @@ class PowerBiEmbedFormatter extends FormatterBase {
        $report_width_units = $item->getValue()['report_width_units'];
        $report_configuration = $this->pwbiEmbed->getEmbedDataFromApi($workspace, $report_id);
        $token_expiration = new DrupalDateTime((string) $report_configuration['tokenExpirationDate']);
@@ -1896,10 +1896,18 @@ index 0876f69..2856a64 100644
 -        $cache_max_age = $token_expiration->getTimestamp() - $current_time->getTimestamp();
 +      if ($token_expiration->getTimestamp() > $current_time) {
 +        $cache_max_age = $token_expiration->getTimestamp() - $current_time;
++        // When JS auto-refresh is enabled, expire the render cache before the
++        // refresh window so any new page load always gets a token with enough
++        // life remaining for the JS timer to schedule properly.
++        $pwbi_settings = $this->configFactory->get('pwbi.settings');
++        if ($pwbi_settings->get('token_refresh_enabled')) {
++          $refresh_buffer = (int) ($pwbi_settings->get('token_refresh_minutes') ?? 10) * 60;
++          $cache_max_age = max(0, $cache_max_age - $refresh_buffer);
++        }
        }
        $embed_array = [
          '#cache' => [
-@@ -176,19 +182,30 @@ class PowerBiEmbedFormatter extends FormatterBase {
+@@ -176,19 +190,30 @@ class PowerBiEmbedFormatter extends FormatterBase {
     *   The options that will be used to embed a powerbi report.
     */
    private function buildEmbedConfiguration(PowerBiEmbedField $item, array $report_configuration, string $langcode): array {
@@ -2364,22 +2372,324 @@ index 0000000..ff28463
 +  }
 +
 +}
+diff --git a/drush.services.yml b/drush.services.yml
+index de22f3d..ba77257 100644
+--- a/drush.services.yml
++++ b/drush.services.yml
+@@ -7,5 +7,6 @@ services:
+       - '@entity_type.manager'
+       - '@entity_field.manager'
+       - '@state'
++      - '@keyvalue'
+     tags:
+       - { name: drush.command }
+diff --git a/pwbi.services.yml b/pwbi.services.yml
+index 5fb3ecb..b93e49b 100644
+--- a/pwbi.services.yml
++++ b/pwbi.services.yml
+@@ -11,7 +11,7 @@ services:
+ 
+   pwbi_embed.embed:
+     class: '\Drupal\pwbi\PowerBiEmbed'
+-    arguments: ['@state' ,'@logger.factory', '@pwbi_api.client']
++    arguments: ['@state', '@logger.factory', '@pwbi_api.client', '@keyvalue']
+ 
+   pwbi.cert_manager:
+     class: '\Drupal\pwbi\Cert\CertificateManager'
+diff --git a/src/Commands/PwbiCommands.php b/src/Commands/PwbiCommands.php
+index 9f96bfc..ac66a0b 100644
+--- a/src/Commands/PwbiCommands.php
++++ b/src/Commands/PwbiCommands.php
+@@ -7,6 +7,7 @@ namespace Drupal\pwbi\Commands;
+ use Drupal\Component\Serialization\Json;
+ use Drupal\Core\Entity\EntityFieldManagerInterface;
+ use Drupal\Core\Entity\EntityTypeManagerInterface;
++use Drupal\Core\KeyValueStore\KeyValueFactoryInterface;
+ use Drupal\Core\State\StateInterface;
+ use Drupal\oauth2_client\Service\Oauth2ClientService;
+ use Drupal\pwbi\Api\PowerBiClient;
+@@ -32,6 +33,7 @@ class PwbiCommands extends DrushCommands {
+     protected readonly EntityTypeManagerInterface $entityTypeManager,
+     protected readonly EntityFieldManagerInterface $entityFieldManager,
+     protected readonly StateInterface $state,
++    protected readonly KeyValueFactoryInterface $keyValueFactory,
+   ) {
+     parent::__construct();
+   }
+@@ -47,6 +49,7 @@ class PwbiCommands extends DrushCommands {
+       $container->get('entity_type.manager'),
+       $container->get('entity_field.manager'),
+       $container->get('state'),
++      $container->get('keyvalue'),
+     );
+   }
+ 
+@@ -96,7 +99,12 @@ class PwbiCommands extends DrushCommands {
+     $audienceWarning = FALSE;
+     $parts = explode('.', $tokenValue);
+     if (count($parts) === 3) {
+-      $payloadJson = base64_decode(strtr($parts[1], '-_', '+/'), TRUE);
++      // JWT segments use URL-safe base64 with padding stripped. Re-add padding
++      // before decoding — base64_decode strict mode rejects bad chars but does
++      // not catch missing padding, which causes silent truncation.
++      $segment = strtr($parts[1], '-_', '+/');
++      $segment = str_pad($segment, strlen($segment) + (4 - strlen($segment) % 4) % 4, '=');
++      $payloadJson = base64_decode($segment, TRUE);
+       $payload = ($payloadJson !== FALSE) ? json_decode($payloadJson, TRUE) : NULL;
+       if (is_array($payload)) {
+         $audience = (string) ($payload['aud'] ?? 'unknown');
+@@ -254,8 +262,8 @@ class PwbiCommands extends DrushCommands {
+     }
+     else {
+       // IDs were provided as arguments — check if we have a cached dataset_id.
+-      $meta = $this->state->get(PowerBiEmbed::PWBI_REPORT_META, []);
+-      $cached_dataset_id = $meta[$report_id]['dataset_id'] ?? '';
++      $entry = $this->keyValueFactory->get(PowerBiEmbed::PWBI_REPORT_META)->get($report_id);
++      $cached_dataset_id = $entry['dataset_id'] ?? '';
+     }
+ 
+     // Validate both IDs are proper UUIDs before hitting the API.
+@@ -407,8 +415,8 @@ class PwbiCommands extends DrushCommands {
+       return [];
+     }
+ 
+-    // Load the per-report metadata cache written by PowerBiEmbed::getEmbedDataFromApi().
+-    $meta = $this->state->get(PowerBiEmbed::PWBI_REPORT_META, []);
++    // Load per-report metadata from the KeyValueStore (one row per report).
++    $meta_store = $this->keyValueFactory->get(PowerBiEmbed::PWBI_REPORT_META);
+ 
+     $reports = [];
+     $storage = $this->entityTypeManager->getStorage('media');
+@@ -437,12 +445,13 @@ class PwbiCommands extends DrushCommands {
+         }
+ 
+         $report_id = (string) $value['report_id'];
++        $entry = $meta_store->get($report_id);
+         $reports[] = [
+           'media_id'     => $entity->id(),
+           'label'        => $entity->label() ?? '(no label)',
+           'workspace_id' => (string) $value['workspace_id'],
+           'report_id'    => $report_id,
+-          'dataset_id'   => $meta[$report_id]['dataset_id'] ?? '',
++          'dataset_id'   => $entry['dataset_id'] ?? '',
+         ];
+       }
+     }
+diff --git a/src/Form/PowerBiEmbedConfigForm.php b/src/Form/PowerBiEmbedConfigForm.php
+index 2eeb878..db2c9d2 100644
+--- a/src/Form/PowerBiEmbedConfigForm.php
++++ b/src/Form/PowerBiEmbedConfigForm.php
+@@ -7,6 +7,7 @@ namespace Drupal\pwbi\Form;
+ use Drupal\Core\Config\ConfigFactoryInterface;
+ use Drupal\Core\Form\ConfigFormBase;
+ use Drupal\Core\Form\FormStateInterface;
++use Drupal\Core\State\StateInterface;
+ use Drupal\pwbi\PowerBiEmbed;
+ use Symfony\Component\DependencyInjection\ContainerInterface;
+ 
+@@ -18,6 +19,7 @@ class PowerBiEmbedConfigForm extends ConfigFormBase {
+   public function __construct(
+     ConfigFactoryInterface $config_factory,
+     protected readonly PowerBiEmbed $pwbiEmbed,
++    protected readonly StateInterface $state,
+   ) {
+     parent::__construct($config_factory);
+   }
+@@ -30,6 +32,7 @@ class PowerBiEmbedConfigForm extends ConfigFormBase {
+     return new static(
+       $container->get('config.factory'),
+       $container->get('pwbi_embed.embed'),
++      $container->get('state'),
+     );
+   }
+ 
+@@ -133,7 +136,7 @@ class PowerBiEmbedConfigForm extends ConfigFormBase {
+     // Clear the cached Service Principal OAuth2 token when the cloud endpoint
+     // changes so a fresh token is requested with the correct audience scope.
+     if ($old_endpoint !== $new_endpoint) {
+-      \Drupal::state()->delete('oauth2_client_access_token-pwbi_service_principal');
++      $this->state->delete('oauth2_client_access_token-pwbi_service_principal');
+       $this->messenger()->addWarning($this->t(
+         'Power BI API endpoint changed — OAuth2 token cache cleared. A fresh token will be requested on next use.'
+       ));
 diff --git a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php b/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
-index 2856a64..f643fab 100644
+index f643fab..50014de 100644
 --- a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
 +++ b/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
-@@ -95,6 +95,14 @@ class PowerBiEmbedFormatter extends FormatterBase {
-       $cache_max_age = 0;
-       if ($token_expiration->getTimestamp() > $current_time) {
-         $cache_max_age = $token_expiration->getTimestamp() - $current_time;
-+        // When JS auto-refresh is enabled, expire the render cache before the
-+        // refresh window so any new page load always gets a token with enough
-+        // life remaining for the JS timer to schedule properly.
-+        $pwbi_settings = $this->configFactory->get('pwbi.settings');
-+        if ($pwbi_settings->get('token_refresh_enabled')) {
-+          $refresh_buffer = (int) ($pwbi_settings->get('token_refresh_minutes') ?? 10) * 60;
-+          $cache_max_age = max(0, $cache_max_age - $refresh_buffer);
-+        }
-       }
+@@ -7,6 +7,7 @@ namespace Drupal\pwbi\Plugin\Field\FieldFormatter;
+ use Drupal\breakpoint\BreakpointManager;
+ use Drupal\Component\Datetime\TimeInterface;
+ use Drupal\Core\Config\ConfigFactoryInterface;
++use Drupal\Core\Config\ImmutableConfig;
+ use Drupal\Core\Datetime\DrupalDateTime;
+ use Drupal\Core\Field\FieldDefinitionInterface;
+ use Drupal\Core\Field\FieldItemListInterface;
+@@ -82,6 +83,12 @@ class PowerBiEmbedFormatter extends FormatterBase {
+     $this->dispatcher->dispatch($overlays_event, PwbiEmbedOverlaysEvent::PWBI_OVERLAYS);
+     $overlay_top = $overlays_event->overlay_top ?? [];
+     $overlay_blocking = $overlays_event->overlay_blocking ?? [];
++
++    // Load once outside the loop — config factory is cached internally but
++    // loading here makes the single-read intent explicit and avoids redundant
++    // calls to buildEmbedConfiguration() for multi-report pages.
++    $pwbi_settings = $this->configFactory->get('pwbi.settings');
++
+     foreach ($items as $item) {
+       $report_id = $item->getValue()['report_id'];
+       $workspace = $item->getValue()['workspace_id'];
+@@ -98,7 +105,6 @@ class PowerBiEmbedFormatter extends FormatterBase {
+         // When JS auto-refresh is enabled, expire the render cache before the
+         // refresh window so any new page load always gets a token with enough
+         // life remaining for the JS timer to schedule properly.
+-        $pwbi_settings = $this->configFactory->get('pwbi.settings');
+         if ($pwbi_settings->get('token_refresh_enabled')) {
+           $refresh_buffer = (int) ($pwbi_settings->get('token_refresh_minutes') ?? 10) * 60;
+           $cache_max_age = max(0, $cache_max_age - $refresh_buffer);
+@@ -107,7 +113,9 @@ class PowerBiEmbedFormatter extends FormatterBase {
        $embed_array = [
          '#cache' => [
+           'max-age' => $cache_max_age,
+-          'tags' => ['pwbi_embed'],
++          // Include config:pwbi.settings so changing the token refresh settings
++          // in the admin form immediately invalidates cached render elements.
++          'tags' => ['pwbi_embed', ...$pwbi_settings->getCacheTags()],
+         ],
+         '#type' => 'component',
+         '#component' => 'pwbi:pwbi-embed',
+@@ -122,7 +130,7 @@ class PowerBiEmbedFormatter extends FormatterBase {
+         '#attached' => [
+           'drupalSettings' => [
+             'pwbi_embed' => [
+-              $report_id => $this->buildEmbedConfiguration($item, $report_configuration, $langcode),
++              $report_id => $this->buildEmbedConfiguration($item, $report_configuration, $langcode, $pwbi_settings),
+             ],
+             'language' => $langcode,
+           ],
+@@ -189,7 +197,7 @@ class PowerBiEmbedFormatter extends FormatterBase {
+    * @return array <mixed>
+    *   The options that will be used to embed a powerbi report.
+    */
+-  private function buildEmbedConfiguration(PowerBiEmbedField $item, array $report_configuration, string $langcode): array {
++  private function buildEmbedConfiguration(PowerBiEmbedField $item, array $report_configuration, string $langcode, ImmutableConfig $pwbi_settings): array {
+     $embed_options = $report_configuration;
+     $embed_options['tokenType'] = $item->getValue()['token_type'];
+     $embed_options['type'] = $item->getValue()['embed_type'];
+@@ -209,7 +217,6 @@ class PowerBiEmbedFormatter extends FormatterBase {
+ 
+     // Set token refresh config after the empty() cleanup loop since empty(FALSE)
+     // and empty(0) are truthy and would strip these values if set beforehand.
+-    $pwbi_settings = $this->configFactory->get('pwbi.settings');
+     $embed_options['token_refresh_enabled'] = (bool) ($pwbi_settings->get('token_refresh_enabled') ?? FALSE);
+     $embed_options['token_refresh_minutes'] = (int) ($pwbi_settings->get('token_refresh_minutes') ?? 10);
+ 
+diff --git a/src/Plugin/Oauth2Client/PwbiServicePrincipal.php b/src/Plugin/Oauth2Client/PwbiServicePrincipal.php
+index 43e3a39..2d1e54a 100644
+--- a/src/Plugin/Oauth2Client/PwbiServicePrincipal.php
++++ b/src/Plugin/Oauth2Client/PwbiServicePrincipal.php
+@@ -69,19 +69,35 @@ class PwbiServicePrincipal extends Oauth2ClientPluginBase {
+     ],
+   ];
+ 
++  /**
++   * Memoized cloud OAuth2 endpoint config for this request.
++   *
++   * @var array<string, string>|null
++   */
++  private ?array $resolvedCloudOauthConfig = NULL;
++
+   /**
+    * Returns the OAuth2 endpoint config for the currently configured cloud.
+    *
+-   * Falls back to the commercial entry when no config exists.
++   * Result is memoized for the lifetime of this plugin instance — the four
++   * URL methods each call this helper and we want a single config read per
++   * request rather than one per method invocation.
++   *
++   * Falls back to the commercial entry when no config exists. Uses
++   * \Drupal::config() because the parent constructor is final and constructor
++   * injection of ConfigFactoryInterface is not possible.
+    *
+    * @return array<string, string>
+    *   Keys: authorization_uri, token_uri, resource_owner_uri, scope.
+    */
+   private function getCloudOauthConfig(): array {
+-    $endpoint = \Drupal::config('pwbi.settings')->get('pwbi_api_endpoint')
+-      ?? 'https://api.powerbi.com';
+-    return self::CLOUD_OAUTH_ENDPOINTS[$endpoint]
+-      ?? self::CLOUD_OAUTH_ENDPOINTS['https://api.powerbi.com'];
++    if ($this->resolvedCloudOauthConfig === NULL) {
++      $endpoint = \Drupal::config('pwbi.settings')->get('pwbi_api_endpoint')
++        ?? 'https://api.powerbi.com';
++      $this->resolvedCloudOauthConfig = self::CLOUD_OAUTH_ENDPOINTS[$endpoint]
++        ?? self::CLOUD_OAUTH_ENDPOINTS['https://api.powerbi.com'];
++    }
++    return $this->resolvedCloudOauthConfig;
+   }
+ 
+   /**
+diff --git a/src/PowerBiEmbed.php b/src/PowerBiEmbed.php
+index d4139c2..afc7f7b 100644
+--- a/src/PowerBiEmbed.php
++++ b/src/PowerBiEmbed.php
+@@ -6,6 +6,7 @@ namespace Drupal\pwbi;
+ 
+ use Drupal\Component\Serialization\Json;
+ use Drupal\Core\DependencyInjection\ContainerInjectionInterface;
++use Drupal\Core\KeyValueStore\KeyValueFactoryInterface;
+ use Drupal\Core\Logger\LoggerChannelFactoryInterface;
+ use Drupal\Core\State\StateInterface;
+ use Drupal\pwbi\Api\PowerBiClient;
+@@ -19,11 +20,12 @@ class PowerBiEmbed implements ContainerInjectionInterface {
+   public const PWBI_EMBED_SETTINGS = 'pwbi_embed_settings';
+ 
+   /**
+-   * State API key for the per-report metadata cache (dataset_id, workspace_id).
++   * KeyValueStore collection name for the per-report metadata cache.
+    *
+-   * Written by getEmbedDataFromApi() on every successful page render so that
+-   * drush pwbi:token-refresh can look up the dataset_id without calling
+-   * getGroupReport() again.
++   * Each report_id is stored as its own key in this collection so writes are
++   * not amplified across all reports. Written by getEmbedDataFromApi() on
++   * every successful embed so drush pwbi:token-refresh can look up dataset_id
++   * without calling getGroupReport() again.
+    */
+   public const PWBI_REPORT_META = 'pwbi_report_meta';
+ 
+@@ -31,6 +33,7 @@ class PowerBiEmbed implements ContainerInjectionInterface {
+     protected readonly StateInterface $state,
+     protected readonly LoggerChannelFactoryInterface $loggerFactory,
+     protected readonly PowerBiClient $pwbiClient,
++    protected readonly KeyValueFactoryInterface $keyValueFactory,
+   ) {}
+ 
+   /**
+@@ -42,6 +45,7 @@ class PowerBiEmbed implements ContainerInjectionInterface {
+       $container->get('state'),
+       $container->get('logger.factory'),
+       $container->get('pwbi_api.client'),
++      $container->get('keyvalue'),
+     );
+   }
+ 
+@@ -101,15 +105,15 @@ class PowerBiEmbed implements ContainerInjectionInterface {
+       'datasetId' => $reportInfo['datasetId'] ?? NULL,
+     ];
+ 
+-    // Cache dataset_id so drush pwbi:token-refresh can skip getGroupReport().
++    // Cache per-report metadata so drush pwbi:token-refresh can skip
++    // getGroupReport(). Each report gets its own KeyValueStore key to avoid
++    // read-modify-write amplification across all reports.
+     if (!empty($result['datasetId'])) {
+-      $meta = $this->state->get(self::PWBI_REPORT_META, []);
+-      $meta[$reportId] = [
++      $this->keyValueFactory->get(self::PWBI_REPORT_META)->set($reportId, [
+         'dataset_id'   => $result['datasetId'],
+         'workspace_id' => $workspace,
+         'cached_at'    => time(),
+-      ];
+-      $this->state->set(self::PWBI_REPORT_META, $meta);
++      ]);
+     }
+ 
+     return $result;

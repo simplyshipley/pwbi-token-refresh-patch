@@ -7,6 +7,7 @@ namespace Drupal\pwbi\Form;
 use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Form\ConfigFormBase;
 use Drupal\Core\Form\FormStateInterface;
+use Drupal\Core\State\StateInterface;
 use Drupal\pwbi\PowerBiEmbed;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 
@@ -18,6 +19,7 @@ class PowerBiEmbedConfigForm extends ConfigFormBase {
   public function __construct(
     ConfigFactoryInterface $config_factory,
     protected readonly PowerBiEmbed $pwbiEmbed,
+    protected readonly StateInterface $state,
   ) {
     parent::__construct($config_factory);
   }
@@ -30,6 +32,7 @@ class PowerBiEmbedConfigForm extends ConfigFormBase {
     return new static(
       $container->get('config.factory'),
       $container->get('pwbi_embed.embed'),
+      $container->get('state'),
     );
   }
 
@@ -133,7 +136,7 @@ class PowerBiEmbedConfigForm extends ConfigFormBase {
     // Clear the cached Service Principal OAuth2 token when the cloud endpoint
     // changes so a fresh token is requested with the correct audience scope.
     if ($old_endpoint !== $new_endpoint) {
-      \Drupal::state()->delete('oauth2_client_access_token-pwbi_service_principal');
+      $this->state->delete('oauth2_client_access_token-pwbi_service_principal');
       $this->messenger()->addWarning($this->t(
         'Power BI API endpoint changed — OAuth2 token cache cleared. A fresh token will be requested on next use.'
       ));

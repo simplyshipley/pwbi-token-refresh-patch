@@ -70,18 +70,34 @@ class PwbiServicePrincipal extends Oauth2ClientPluginBase {
   ];
 
   /**
+   * Memoized cloud OAuth2 endpoint config for this request.
+   *
+   * @var array<string, string>|null
+   */
+  private ?array $resolvedCloudOauthConfig = NULL;
+
+  /**
    * Returns the OAuth2 endpoint config for the currently configured cloud.
    *
-   * Falls back to the commercial entry when no config exists.
+   * Result is memoized for the lifetime of this plugin instance — the four
+   * URL methods each call this helper and we want a single config read per
+   * request rather than one per method invocation.
+   *
+   * Falls back to the commercial entry when no config exists. Uses
+   * \Drupal::config() because the parent constructor is final and constructor
+   * injection of ConfigFactoryInterface is not possible.
    *
    * @return array<string, string>
    *   Keys: authorization_uri, token_uri, resource_owner_uri, scope.
    */
   private function getCloudOauthConfig(): array {
-    $endpoint = \Drupal::config('pwbi.settings')->get('pwbi_api_endpoint')
-      ?? 'https://api.powerbi.com';
-    return self::CLOUD_OAUTH_ENDPOINTS[$endpoint]
-      ?? self::CLOUD_OAUTH_ENDPOINTS['https://api.powerbi.com'];
+    if ($this->resolvedCloudOauthConfig === NULL) {
+      $endpoint = \Drupal::config('pwbi.settings')->get('pwbi_api_endpoint')
+        ?? 'https://api.powerbi.com';
+      $this->resolvedCloudOauthConfig = self::CLOUD_OAUTH_ENDPOINTS[$endpoint]
+        ?? self::CLOUD_OAUTH_ENDPOINTS['https://api.powerbi.com'];
+    }
+    return $this->resolvedCloudOauthConfig;
   }
 
   /**

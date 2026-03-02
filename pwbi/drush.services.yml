@@ -7,5 +7,6 @@ services:
       - '@entity_type.manager'
       - '@entity_field.manager'
       - '@state'
+      - '@keyvalue'
     tags:
       - { name: drush.command }
