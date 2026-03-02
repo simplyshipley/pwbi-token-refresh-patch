@@ -1,9 +1,0 @@
-services:
-  pwbi_banner.disclaimer_banner:
-    class: Drupal\pwbi_banner\DisclaimerBanner
-    arguments:  ['@config.factory', '@request_stack', '@module_handler']
-  pwbi_banner.overlays:
-    class: '\Drupal\pwbi_banner\EventSubscriber\PwbiEmbedOverlaysSubscriber'
-    arguments: ['@pwbi_banner.disclaimer_banner']
-    tags:
-      - { name: 'event_subscriber' }

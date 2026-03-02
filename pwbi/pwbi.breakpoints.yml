@@ -1,9 +1,0 @@
-pwbi.sm:
-  label: Mobile
-  mediaQuery: 'only screen and (max-width: 600px)'
-pwbi.md:
-  label: Tablet
-  mediaQuery: 'only screen and (min-width: 600px)'
-pwbi.lg:
-  label: Desktop
-  mediaQuery: 'only screen and (min-width: 992px)'
