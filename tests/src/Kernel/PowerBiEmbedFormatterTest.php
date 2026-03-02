@@ -67,13 +67,16 @@ class PowerBiEmbedFormatterTest extends KernelTestBase {
   /**
    * Creates a test media type, field, display, and media entity.
    *
+   * Returns a named array so that subclasses can access the values by key
+   * without depending on positional order.
+   *
    * @param int $tokenLifetimeSec
    *   How many seconds until the mock token expires.
    *
-   * @return array{0: \Drupal\Core\Entity\Display\EntityDisplayInterface, 1: \Drupal\media\Entity\Media}
-   *   The display and media entity for use in assertions.
+   * @return array{'display': \Drupal\Core\Entity\Display\EntityDisplayInterface, 'media': \Drupal\media\Entity\Media}
+   *   Named array with 'display' and 'media' keys.
    */
-  private function createEmbedDisplay(int $tokenLifetimeSec = 300): array {
+  protected function createFixture(int $tokenLifetimeSec = 300): array {
     $this->createMediaType('pwbi_embed_visual', ['id' => 'document']);
 
     $field_storage = FieldStorageConfig::create([
@@ -125,7 +128,7 @@ class PowerBiEmbedFormatterTest extends KernelTestBase {
     $expiry = \Drupal::time()->getCurrentTime() + $tokenLifetimeSec;
     \Drupal::state()->set('api_powerbi_com_token_expire', $expiry);
 
-    return [$display, $media];
+    return ['display' => $display, 'media' => $media];
   }
 
   /**
@@ -134,7 +137,7 @@ class PowerBiEmbedFormatterTest extends KernelTestBase {
    * @covers ::viewElements
    */
   public function testViewElements(): void {
-    [$display, $media] = $this->createEmbedDisplay(300);
+    ['display' => $display, 'media' => $media] = $this->createFixture(300);
 
     $build = $display->build($media);
     $this->assertNotNull($build['embed']);
@@ -177,7 +180,7 @@ class PowerBiEmbedFormatterTest extends KernelTestBase {
       ->set('token_refresh_minutes', 10)
       ->save();
 
-    [$display, $media] = $this->createEmbedDisplay(1200);
+    ['display' => $display, 'media' => $media] = $this->createFixture(1200);
     $build = $display->build($media);
 
     $embed_key = $this->getServiceReportId();
@@ -209,7 +212,7 @@ class PowerBiEmbedFormatterTest extends KernelTestBase {
       ->save();
 
     // Token lifetime: 1200s. Buffer: 10 * 60 = 600s. Expected max-age: 600.
-    [$display, $media] = $this->createEmbedDisplay(1200);
+    ['display' => $display, 'media' => $media] = $this->createFixture(1200);
     $build = $display->build($media);
     $renderer = \Drupal::service('renderer');
     $renderer->renderInIsolation($build['embed']);
