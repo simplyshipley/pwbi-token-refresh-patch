@@ -57,16 +57,6 @@ class PwbiTokenRefreshControllerTest extends BrowserTestBase {
   }
 
   /**
-   * Returns a CSRF token valid for the token refresh route.
-   *
-   * Must be called after drupalLogin() so the session is active.
-   */
-  private function getCsrfToken(string $workspace_id, string $report_id): string {
-    return $this->container->get('csrf_token')
-      ->get("pwbi/token-refresh/{$workspace_id}/{$report_id}");
-  }
-
-  /**
    * Happy path: allowlisted workspace+report with valid dataset_id returns
    * a JSON token and expiration with Cache-Control: no-store.
    *
@@ -76,12 +66,8 @@ class PwbiTokenRefreshControllerTest extends BrowserTestBase {
     $user = $this->drupalCreateUser(['view pwbi embed token']);
     $this->drupalLogin($user);
 
-    $csrf = $this->getCsrfToken(self::WORKSPACE_UUID, self::REPORT_UUID);
     $this->drupalGet('pwbi/token-refresh/' . self::WORKSPACE_UUID . '/' . self::REPORT_UUID, [
-      'query' => [
-        'dataset_id' => self::DATASET_UUID,
-        'token'      => $csrf,
-      ],
+      'query' => ['dataset_id' => self::DATASET_UUID],
     ]);
 
     $this->assertSession()->statusCodeEquals(200);
@@ -104,12 +90,8 @@ class PwbiTokenRefreshControllerTest extends BrowserTestBase {
     $this->drupalLogin($user);
 
     $otherWorkspace = 'd4e5f6a7-b8c9-0123-def0-123456789012';
-    $csrf = $this->getCsrfToken($otherWorkspace, self::REPORT_UUID);
     $this->drupalGet('pwbi/token-refresh/' . $otherWorkspace . '/' . self::REPORT_UUID, [
-      'query' => [
-        'dataset_id' => self::DATASET_UUID,
-        'token'      => $csrf,
-      ],
+      'query' => ['dataset_id' => self::DATASET_UUID],
     ]);
 
     $this->assertSession()->statusCodeEquals(403);
@@ -118,23 +100,24 @@ class PwbiTokenRefreshControllerTest extends BrowserTestBase {
   }
 
   /**
-   * Request without a CSRF token returns 403.
+   * Anonymous user with the permission granted can refresh tokens.
    *
-   * The route has _csrf_token: TRUE. An authenticated user with correct
-   * permission but a missing or invalid ?token= query param must be denied.
+   * The route has no CSRF requirement — it is a read-only GET endpoint and
+   * same-origin policy prevents cross-site callers from reading the response.
    *
    * @covers ::refresh
    */
-  public function testRefreshForbiddenWithoutCsrfToken(): void {
-    $user = $this->drupalCreateUser(['view pwbi embed token']);
-    $this->drupalLogin($user);
+  public function testRefreshWorksForAnonymousWithPermission(): void {
+    // Grant the permission to the anonymous role.
+    user_role_grant_permissions('anonymous', ['view pwbi embed token']);
 
     $this->drupalGet('pwbi/token-refresh/' . self::WORKSPACE_UUID . '/' . self::REPORT_UUID, [
       'query' => ['dataset_id' => self::DATASET_UUID],
-      // Deliberately omit 'token' query parameter.
     ]);
 
-    $this->assertSession()->statusCodeEquals(403);
+    $this->assertSession()->statusCodeEquals(200);
+    $data = json_decode($this->getSession()->getPage()->getContent(), TRUE);
+    $this->assertSame('token', $data['token']);
   }
 
   /**
@@ -146,12 +129,8 @@ class PwbiTokenRefreshControllerTest extends BrowserTestBase {
     $user = $this->drupalCreateUser(['access content']);
     $this->drupalLogin($user);
 
-    $csrf = $this->getCsrfToken(self::WORKSPACE_UUID, self::REPORT_UUID);
     $this->drupalGet('pwbi/token-refresh/' . self::WORKSPACE_UUID . '/' . self::REPORT_UUID, [
-      'query' => [
-        'dataset_id' => self::DATASET_UUID,
-        'token'      => $csrf,
-      ],
+      'query' => ['dataset_id' => self::DATASET_UUID],
     ]);
 
     $this->assertSession()->statusCodeEquals(403);
@@ -166,10 +145,7 @@ class PwbiTokenRefreshControllerTest extends BrowserTestBase {
     $user = $this->drupalCreateUser(['view pwbi embed token']);
     $this->drupalLogin($user);
 
-    $csrf = $this->getCsrfToken(self::WORKSPACE_UUID, self::REPORT_UUID);
-    $this->drupalGet('pwbi/token-refresh/' . self::WORKSPACE_UUID . '/' . self::REPORT_UUID, [
-      'query' => ['token' => $csrf],
-    ]);
+    $this->drupalGet('pwbi/token-refresh/' . self::WORKSPACE_UUID . '/' . self::REPORT_UUID);
 
     $this->assertSession()->statusCodeEquals(400);
     $data = json_decode($this->getSession()->getPage()->getContent(), TRUE);
@@ -185,12 +161,8 @@ class PwbiTokenRefreshControllerTest extends BrowserTestBase {
     $user = $this->drupalCreateUser(['view pwbi embed token']);
     $this->drupalLogin($user);
 
-    $csrf = $this->getCsrfToken(self::WORKSPACE_UUID, self::REPORT_UUID);
     $this->drupalGet('pwbi/token-refresh/' . self::WORKSPACE_UUID . '/' . self::REPORT_UUID, [
-      'query' => [
-        'dataset_id' => 'not-a-valid-uuid',
-        'token'      => $csrf,
-      ],
+      'query' => ['dataset_id' => 'not-a-valid-uuid'],
     ]);
 
     $this->assertSession()->statusCodeEquals(400);
