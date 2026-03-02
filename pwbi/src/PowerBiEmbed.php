@@ -18,6 +18,15 @@ class PowerBiEmbed implements ContainerInjectionInterface {
 
   public const PWBI_EMBED_SETTINGS = 'pwbi_embed_settings';
 
+  /**
+   * State API key for the per-report metadata cache (dataset_id, workspace_id).
+   *
+   * Written by getEmbedDataFromApi() on every successful page render so that
+   * drush pwbi:token-refresh can look up the dataset_id without calling
+   * getGroupReport() again.
+   */
+  public const PWBI_REPORT_META = 'pwbi_report_meta';
+
   public function __construct(
     protected readonly StateInterface $state,
     protected readonly LoggerChannelFactoryInterface $loggerFactory,
@@ -83,7 +92,7 @@ class PowerBiEmbed implements ContainerInjectionInterface {
     ];
 
     $embedToken = Json::decode($this->pwbiClient->getEmbedToken($embedTokenBody));
-    return [
+    $result = [
       'pageName' => $pages['value'][0]['name'],
       'visualName' => $pages['value'][0]['displayName'],
       'embedUrl' => $reportInfo['embedUrl'],
@@ -91,6 +100,19 @@ class PowerBiEmbed implements ContainerInjectionInterface {
       'tokenExpirationDate' => $embedToken['expiration'],
       'datasetId' => $reportInfo['datasetId'] ?? NULL,
     ];
+
+    // Cache dataset_id so drush pwbi:token-refresh can skip getGroupReport().
+    if (!empty($result['datasetId'])) {
+      $meta = $this->state->get(self::PWBI_REPORT_META, []);
+      $meta[$reportId] = [
+        'dataset_id'   => $result['datasetId'],
+        'workspace_id' => $workspace,
+        'cached_at'    => time(),
+      ];
+      $this->state->set(self::PWBI_REPORT_META, $meta);
+    }
+
+    return $result;
   }
 
 }
