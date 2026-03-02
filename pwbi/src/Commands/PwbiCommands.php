@@ -66,6 +66,13 @@ class PwbiCommands extends DrushCommands {
       return;
     }
 
+    // oauth2_client may return null without throwing if the client plugin is
+    // not configured (e.g. 'pwbi_service_principal' entity does not exist).
+    if ($token === NULL) {
+      $this->io()->error('OAuth2 client "pwbi_service_principal" is not configured. Visit Admin → Configuration → Services → OAuth2 Clients to set it up.');
+      return;
+    }
+
     $tokenValue = $token->getToken();
     if (empty($tokenValue)) {
       $this->io()->error('OAuth2 handshake returned an empty token.');
