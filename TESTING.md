@@ -21,24 +21,80 @@ This patch adds two features to the `pwbi` Drupal module:
 | `config/install/pwbi.settings.yml` | **New** — default config values |
 | `config/schema/pwbi.schema.yml` | Adds `pwbi.settings` schema |
 | `drush.services.yml` | **New** — registers Drush commands |
+| `pwbi.permissions.yml` | Adds `view pwbi embed token` permission for the refresh endpoint |
 | `pwbi.routing.yml` | Adds `/pwbi/token-refresh/{workspace_id}/{report_id}` route |
 
 ---
 
-## Installation
+## Post-Install Checklist
 
-1. Copy the patched `pwbi/` directory over your existing `modules/contrib/pwbi/` installation, or apply as a Composer patch.
-2. Rebuild the Drupal container and clear caches:
+Complete these steps in order after applying the patch. Each `[ ]` is a gate — if it fails, stop and diagnose before continuing.
+
+### 1. Apply and initialize
+
+- [ ] Apply patch via Composer: `ddev composer install` (or `composer install` on the server)
+- [ ] `drush cr` — rebuild the container so new services and routes are registered
+- [ ] `drush updb` — runs any update hooks and imports the new `pwbi.settings` config
+
+### 2. Configure the module
+
+Go to **Admin → Configuration → Power BI → Embed Settings** (`/admin/config/pwbi/embed_settings`):
+
+- [ ] Set **API endpoint** to **US Government GCC** (`https://api.powerbigov.us`) for OIG/GCC sites
+- [ ] Check **Enable automatic embed token refresh**
+- [ ] Set **Minutes before expiry to refresh** (default 10 is fine)
+- [ ] Click **Save configuration**
+- [ ] `drush cr` — clears cached config so the formatter picks up the new settings
+
+### 3. Assign the new permission
+
+Go to **Admin → People → Permissions** (`/admin/people/permissions`):
+
+- [ ] Find **"Request Power BI embed tokens"** under the Power BI section
+- [ ] Grant it to every role that should see embedded reports (e.g. `authenticated user`, or your site-specific viewer role)
+- [ ] Save permissions
+
+> Without this permission the JS token refresh will receive a 403 on every poll and the embed will stop refreshing silently.
+
+### 4. Test the OAuth handshake (Layer 1)
 
 ```bash
-drush cr
+drush pwbi:auth-check
 ```
 
-3. Run database updates (adds the `pwbi.settings` config):
+- [ ] Output shows `[OK] OAuth2 handshake successful!`
+- [ ] `Is expired` shows `No`
+- [ ] `Expires` shows a future time (~60 min from now)
+
+**If this fails:** stop here. No downstream test will pass until the service principal credentials are valid.
+
+### 5. List configured reports (Layer 2 — part A)
 
 ```bash
-drush updb
+drush pwbi:list-reports
 ```
+
+- [ ] At least one report is listed with a valid Workspace ID and Report ID
+- [ ] The Workspace ID matches one of the workspaces entered in the admin form
+
+**If no reports appear:** the Media entities with `pwbi_embed` fields either don't exist yet or have empty workspace/report ID values.
+
+### 6. Test embed token generation (Layer 2 — part B)
+
+```bash
+# If only one report is configured — auto-detected:
+drush pwbi:token-refresh
+
+# If multiple reports — use IDs from pwbi:list-reports:
+drush pwbi:token-refresh <workspace_id> <report_id>
+```
+
+- [ ] Output shows `[OK] Embed token generated successfully!`
+- [ ] `Token (truncated)` field is populated
+- [ ] `Expiration` shows a future timestamp (~60 min from now)
+- [ ] `Dataset ID` is a valid UUID
+
+**If this fails:** check the failure diagnosis table in Layer 2 below.
 
 ---
 
