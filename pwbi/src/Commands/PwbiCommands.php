@@ -258,7 +258,7 @@ class PwbiCommands extends DrushCommands {
     foreach (array_keys($media_fields) as $field_name) {
       $ids = $storage->getQuery()
         ->accessCheck(FALSE)
-        ->exists($field_name)
+        ->condition($field_name . '.workspace_id', '', '<>')
         ->execute();
 
       if (empty($ids)) {

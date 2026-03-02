@@ -725,7 +725,7 @@ index 0000000..6fea5ac
 +      - { name: drush.command }
 diff --git a/src/Commands/PwbiCommands.php b/src/Commands/PwbiCommands.php
 new file mode 100644
-index 0000000..5c239ac
+index 0000000..907a96e
 --- /dev/null
 +++ b/src/Commands/PwbiCommands.php
 @@ -0,0 +1,293 @@
@@ -989,7 +989,7 @@ index 0000000..5c239ac
 +    foreach (array_keys($media_fields) as $field_name) {
 +      $ids = $storage->getQuery()
 +        ->accessCheck(FALSE)
-+        ->exists($field_name)
++        ->condition($field_name . '.workspace_id', '', '<>')
 +        ->execute();
 +
 +      if (empty($ids)) {
