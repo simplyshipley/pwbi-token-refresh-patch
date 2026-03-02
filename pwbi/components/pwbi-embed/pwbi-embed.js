@@ -166,6 +166,39 @@
       });
     },
     setEvents(settings, powerbiClient) {
+      // Suppress subscribe heartbeat 405 errors if the setting is enabled.
+      // The Power BI SDK makes periodic POST requests to the /subscribe
+      // endpoint for push dataset updates. On GCC, the routing cluster
+      // redirects POST→GET, producing a 405 that the SDK cannot recover from.
+      // For sites using scheduled (not streaming) refresh, these requests are
+      // noise. We intercept them and return a mock 200 so the SDK stops
+      // retrying. The guard prevents double-patching across multiple attach()
+      // calls or reports on the same page.
+      const firstEmbed = Object.values(settings.pwbi_embed)[0] ?? {};
+      if (firstEmbed.block_subscribe_heartbeat && !window._pwbiSubscribeBlocked) {
+        window._pwbiSubscribeBlocked = true;
+        const originalFetch = window.fetch;
+        window.fetch = function(resource, options) {
+          let url = '';
+          if (typeof resource === 'string') {
+            url = resource;
+          } else if (resource instanceof URL) {
+            url = resource.href;
+          } else if (resource && typeof resource.url === 'string') {
+            url = resource.url;
+          }
+          // Only intercept external subscribe requests — never Drupal-internal ones.
+          const base = drupalSettings.path.baseUrl;
+          if (!url.startsWith(base) && url.includes('/subscribe')) {
+            return Promise.resolve(new Response('{}', {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            }));
+          }
+          return originalFetch.apply(this, arguments);
+        };
+      }
+
       const powerBiEmbed = {
         callback: this.runEmbeds,
         pwbi_embed: settings.pwbi_embed,
