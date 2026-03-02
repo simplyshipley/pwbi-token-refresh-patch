@@ -1,9 +1,12 @@
 # pwbi Patch — Setup & Testing Guide
 
-This patch adds two features to the `pwbi` Drupal module:
+This patch adds the following features to the `pwbi` Drupal module:
 
 1. **Configurable API endpoint** — choose Commercial, GCC, GCC High, or DoD instead of the hardcoded commercial endpoint.
 2. **Automatic embed token refresh** — silently renews the embed token before it expires so dashboards stay live for users who keep a tab open.
+3. **Multi-cloud OAuth2** — Service principal OAuth2 endpoint URLs auto-swap based on the configured cloud (commercial Azure AD vs US Government Azure AD).
+4. **Drush diagnostic commands** — `pwbi:auth-check`, `pwbi:flush-token`, `pwbi:list-reports`, `pwbi:token-refresh` for CLI-based testing and operations.
+5. **Endpoint change auto-clear** — changing the API endpoint in admin automatically invalidates the cached OAuth2 token, preventing cross-cloud authentication errors.
 
 ---
 
@@ -14,9 +17,10 @@ This patch adds two features to the `pwbi` Drupal module:
 | `src/Api/PowerBiClient.php` | Dynamic endpoint via Config API; `getApiRoot()` method replaces 8 hardcoded constants |
 | `src/Form/PowerBiEmbedConfigForm.php` | Extends `ConfigFormBase`; adds 3 new admin fields |
 | `src/Controller/PwbiTokenRefreshController.php` | **New** — JSON endpoint that issues a fresh embed token |
-| `src/Commands/PwbiCommands.php` | **New** — Drush diagnostic commands |
+| `src/Commands/PwbiCommands.php` | **New** — Drush commands: `pwbi:auth-check`, `pwbi:flush-token`, `pwbi:list-reports`, `pwbi:token-refresh` |
 | `src/PowerBiEmbed.php` | Returns `datasetId` in embed data so JS can pass it to the refresh endpoint |
-| `src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php` | Passes `workspaceId`, `datasetId`, and refresh settings into `drupalSettings` |
+| `src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php` | Passes `workspaceId`, `datasetId`, and refresh settings into `drupalSettings`; reduces render cache max-age by the refresh buffer so cached pages always deliver a fresh-enough token |
+| `src/Plugin/Oauth2Client/PwbiServicePrincipal.php` | Multi-cloud OAuth2 — all four endpoint URLs (authorization, token, resource_owner, scope) auto-swap based on `pwbi_api_endpoint` config |
 | `components/pwbi-embed/pwbi-embed.js` | Adds `setInterval` polling (30s) with `checkTokenAndUpdate` / `updateToken` |
 | `config/install/pwbi.settings.yml` | **New** — default config values |
 | `config/schema/pwbi.schema.yml` | Adds `pwbi.settings` schema |
@@ -116,6 +120,10 @@ Select the endpoint that matches your Power BI tenant:
 
 > **OIG / GCC sites:** Select **US Government GCC**.
 
+When the endpoint is changed and saved, the cached Service Principal OAuth2 token is automatically cleared and a warning is displayed. This ensures the next request re-authenticates against the correct cloud's Azure AD endpoint. You do not need to run `pwbi:flush-token` manually after changing the endpoint setting.
+
+The OAuth2 endpoint URLs (authorization, token, resource_owner, scope) also update automatically — GCC and commercial use the same Azure AD (`login.microsoftonline.com`), while GCC High and DoD use the US Government Azure AD (`login.microsoftonline.us`).
+
 ### Automatic Token Refresh
 
 | Setting | Description | Default |
@@ -161,7 +169,8 @@ Power BI OAuth2 Auth Check
 |-------|-------------|
 | `Failed to obtain OAuth2 token: ...` | Wrong credentials, expired cert, or wrong tenant |
 | `OAuth2 handshake returned an empty token` | Auth succeeded but token payload is empty — check scope config |
-| Token shows `Is expired: YES` | Cached stale token; Drupal State API holds the old one. Clear state: `drush php-eval "\Drupal::state()->delete('oauth2_client_access_token.pwbi_service_principal');"` then retry |
+| Token shows `Is expired: YES` | Cached stale token. Clear it with `drush pwbi:flush-token` then retry. |
+| Audience warning `aud` does not match GCC scope | Endpoint changed after token was cached. Run `drush pwbi:flush-token` to force re-authentication against the new cloud's Azure AD. |
 
 ---
 
@@ -285,11 +294,14 @@ s.tokenExpiration = new Date(Date.now() + 5 * 60 * 1000).toISOString();
 console.log('[pwbi-test] tokenExpiration set to', s.tokenExpiration, '— refresh will fire within 30s');
 ```
 
-Watch the console for:
+Watch the console for the 30-second polling log and the refresh sequence:
 ```
+[pwbi] Token check — expires: 2026-03-02T20:30:00Z, ~4min left, refresh window: 10min
 [pwbi] Token expiring soon, refreshing...
-[pwbi] Token refreshed. New expiration: 2026-03-02T16:00:00Z
+[pwbi] Token refreshed. New expiration: 2026-03-02T21:28:00Z
 ```
+
+The "Token check" line appears every 30 seconds. Once the token enters the refresh window (`minutesRemaining ≤ token_refresh_minutes`), the "expiring soon" and "refreshed" lines follow. The **"New expiration:" timestamp should advance by ~60 minutes** from the previous expiry — this is confirmation that `setAccessToken()` succeeded and Power BI silently accepted the new token.
 
 **Verify the new token was applied to the live embed:**
 
@@ -305,6 +317,21 @@ Object.values(powerbi.embeds).forEach(embed => {
 ```
 
 After a successful refresh, this value should differ from what it was on initial page load.
+
+**Server-side confirmation via Drupal watchdog:**
+
+Every successful token refresh also logs to the Drupal watchdog. Run this to see server-side confirmation:
+
+```bash
+drush watchdog:show --type=pwbi
+```
+
+Each successful refresh logs:
+```
+Embed token refreshed for report <report_id> (workspace <workspace_id>), expires <datetime>.
+```
+
+If the browser is refreshing (Network tab shows GET requests to `/pwbi/token-refresh/`) but no watchdog entries appear, the controller is returning an error before reaching the log line — check the response body in the Network tab.
 
 **Failure diagnoses:**
 
@@ -416,22 +443,33 @@ If this call succeeds, Layers 1–2 of the Drupal test (`drush pwbi:auth-check` 
 ## Quick Reference
 
 ```bash
-# Rebuild cache after installing patch
+# Rebuild cache after installing patch or changing settings
 drush cr
 
-# Test Layer 1: OAuth2 handshake
+# Test Layer 1: OAuth2 handshake (service principal → Azure AD Bearer token)
 drush pwbi:auth-check
+
+# Flush the cached OAuth2 Service Principal token (force re-authentication)
+# Use after changing API endpoint, rotating credentials, or if auth-check shows expired token
+drush pwbi:flush-token
 
 # List all configured reports (workspace_id + report_id from Media entities)
 drush pwbi:list-reports
 
-# Test Layer 2: Embed token generation
-drush pwbi:token-refresh                        # auto-detect if only one report
-drush pwbi:token-refresh <workspace_id> <report_id>  # explicit when multiple reports
+# Test Layer 2: Embed token generation (Bearer token → Power BI REST API → embed token)
+drush pwbi:token-refresh                                      # auto-detect if only one report
+drush pwbi:token-refresh <workspace_id> <report_id>          # explicit when multiple reports
 
-# Clear a stale cached OAuth2 token
-drush php-eval "\Drupal::state()->delete('oauth2_client_access_token.pwbi_service_principal');"
+# Server-side token refresh confirmations (watchdog entries from the controller)
+drush watchdog:show --type=pwbi
 
 # Check current API endpoint setting
 drush php-eval "print \Drupal::config('pwbi.settings')->get('pwbi_api_endpoint');"
+
+# Check whether token refresh is enabled and the refresh window
+drush php-eval "
+  \$s = \Drupal::config('pwbi.settings');
+  print 'refresh_enabled: ' . (\$s->get('token_refresh_enabled') ? 'yes' : 'no') . PHP_EOL;
+  print 'refresh_minutes: ' . \$s->get('token_refresh_minutes') . PHP_EOL;
+"
 ```
