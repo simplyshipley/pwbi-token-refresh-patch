@@ -262,6 +262,101 @@ After a successful refresh, this value should differ from what it was on initial
 
 ---
 
+## Layer 0 — REST API Playground (pre-Drupal verification)
+
+Use the [Power BI REST API Playground](https://learn.microsoft.com/en-us/rest/api/power-bi/) to verify your Bearer token and workspace/report IDs work against the GCC endpoint **before** Drupal is involved. This isolates credential and permission issues from Drupal configuration issues.
+
+> **GCC base URL for all requests below:** `https://api.powerbigov.us` (not `api.powerbi.com`)
+
+### What you need
+
+| Value | Where to find it |
+|-------|-----------------|
+| Bearer token | Output of `drush pwbi:auth-check` (copy the full token, not the truncated form) |
+| Workspace ID | Output of `drush pwbi:list-reports` |
+| Report ID | Output of `drush pwbi:list-reports` |
+| Dataset ID | Returned by the Get Report call below |
+
+### Step 1 — Get a fresh Bearer token
+
+```bash
+drush pwbi:auth-check
+```
+
+Copy the full token from Drupal State (not the truncated display):
+
+```bash
+drush php-eval "
+  \$token = \Drupal::service('oauth2_client.service')->getAccessToken('pwbi_service_principal');
+  print \$token->getToken();
+"
+```
+
+### Step 2 — Verify workspace access (Get Report)
+
+```
+GET https://api.powerbigov.us/v1.0/myorg/groups/{workspace_id}/reports/{report_id}
+
+Authorization: Bearer <token from step 1>
+```
+
+**Expected response:**
+```json
+{
+  "id": "yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy",
+  "reportType": "PowerBIReport",
+  "name": "OIG Dashboard",
+  "datasetId": "zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz",
+  "webUrl": "https://app.powerbigov.us/...",
+  "embedUrl": "https://app.powerbigov.us/reportEmbed?reportId=..."
+}
+```
+
+Copy the `datasetId` — you need it for Step 3.
+
+**Failure diagnoses:**
+
+| HTTP status | Cause |
+|-------------|-------|
+| `401 Unauthorized` | Bearer token expired or wrong endpoint (used `.com` instead of `powerbigov.us`) |
+| `403 Forbidden` | Service principal is not a Workspace Member — add it in Power BI workspace settings |
+| `404 Not Found` | Wrong workspace ID or report ID |
+
+### Step 3 — Generate an embed token
+
+```
+POST https://api.powerbigov.us/v1.0/myorg/GenerateToken
+
+Authorization: Bearer <token from step 1>
+Content-Type: application/json
+
+{
+  "datasets": [{"id": "<dataset_id from step 2>"}],
+  "reports":  [{"id": "<report_id>"}]
+}
+```
+
+**Expected response:**
+```json
+{
+  "token": "H4sIAAAA...",
+  "tokenId": "a1b2c3d4-...",
+  "expiration": "2026-03-02T16:00:00Z"
+}
+```
+
+**Failure diagnoses:**
+
+| HTTP status | Cause |
+|-------------|-------|
+| `401 Unauthorized` | Bearer token expired |
+| `403 Forbidden` | Service principal lacks `Dataset.ReadWrite.All` or `Report.ReadWrite.All` permission in Power BI, or the dataset is not in the workspace |
+| `400 Bad Request` | Malformed request body — verify dataset and report IDs are valid UUIDs |
+
+If this call succeeds, Layers 1–2 of the Drupal test (`drush pwbi:auth-check` and `drush pwbi:token-refresh`) will also succeed.
+
+---
+
 ## Quick Reference
 
 ```bash
