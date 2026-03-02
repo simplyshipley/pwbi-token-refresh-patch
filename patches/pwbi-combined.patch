@@ -271,38 +271,6 @@ index 020547c..adc6d5e 100644
 +    report_id: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
 +  options:
 +    no_cache: TRUE
-diff --git a/pwbi.services.yml b/pwbi.services.yml
-index 2bd86b4..27e0fcf 100644
---- a/pwbi.services.yml
-+++ b/pwbi.services.yml
-@@ -3,11 +3,11 @@ services:
-     class: Drupal\pwbi\ConfigurationCredentialProvider
-     decorates: oauth2_client.service.credentials
-     public: false
--    arguments: ['@state', '@entity_type.manager', '@pwbi.cert_manager']
-+    arguments: ['@state', '@entity_type.manager', '@pwbi.cert_manager', '@config.factory']
- 
-   pwbi_api.client:
-     class: '\Drupal\pwbi\Api\PowerBiClient'
--    arguments: ['@state' ,'@logger.factory', '@http_client', '@oauth2_client.service', '@file_url_generator', '@file_system']
-+    arguments: ['@state', '@logger.factory', '@http_client', '@oauth2_client.service', '@file_url_generator', '@file_system', '@config.factory']
- 
-   pwbi_embed.embed:
-     class: '\Drupal\pwbi\PowerBiEmbed'
-@@ -19,10 +19,10 @@ services:
- 
-   pwbi.oauth_form_changes:
-     class: '\Drupal\pwbi\Oauth2Form\FormChanges'
--    arguments: ['@pwbi.cert_manager']
-+    arguments: ['@config.factory', '@pwbi.cert_manager']
- 
-   pwbi.pwbi_cache_response_subscriber:
-     class: Drupal\pwbi\EventSubscriber\PwbiResponseSubscriber
-     arguments: ['@datetime.time', '@current_user']
-     tags:
--      - { name: event_subscriber }
-\ No newline at end of file
-+      - { name: event_subscriber }
 diff --git a/src/Api/PowerBiClient.php b/src/Api/PowerBiClient.php
 index 34987a1..72f2523 100644
 --- a/src/Api/PowerBiClient.php
@@ -1170,6 +1138,31 @@ index 0000000..e66dc8b
 +  }
 +
 +}
+diff --git a/pwbi.services.yml b/pwbi.services.yml
+index 2bd86b4..5fb3ecb 100644
+--- a/pwbi.services.yml
++++ b/pwbi.services.yml
+@@ -3,11 +3,11 @@ services:
+     class: Drupal\pwbi\ConfigurationCredentialProvider
+     decorates: oauth2_client.service.credentials
+     public: false
+-    arguments: ['@state', '@entity_type.manager', '@pwbi.cert_manager']
++    arguments: ['@state', '@entity_type.manager', '@pwbi.cert_manager', '@config.factory']
+ 
+   pwbi_api.client:
+     class: '\Drupal\pwbi\Api\PowerBiClient'
+-    arguments: ['@state' ,'@logger.factory', '@http_client', '@oauth2_client.service', '@file_url_generator', '@file_system']
++    arguments: ['@state', '@logger.factory', '@http_client', '@oauth2_client.service', '@file_url_generator', '@file_system', '@config.factory']
+ 
+   pwbi_embed.embed:
+     class: '\Drupal\pwbi\PowerBiEmbed'
+@@ -25,4 +25,4 @@ services:
+     class: Drupal\pwbi\EventSubscriber\PwbiResponseSubscriber
+     arguments: ['@datetime.time', '@current_user']
+     tags:
+-      - { name: event_subscriber }
+\ No newline at end of file
++      - { name: event_subscriber }
 diff --git a/src/Commands/PwbiCommands.php b/src/Commands/PwbiCommands.php
 new file mode 100644
 index 0000000..ed4eb9c
