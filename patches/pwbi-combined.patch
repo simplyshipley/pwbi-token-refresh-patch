@@ -1866,7 +1866,7 @@ index 5c2b2e7..db2c9d2 100644
  
  }
 diff --git a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php b/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
-index 0876f69..50014de 100644
+index 0876f69..62fae24 100644
 --- a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
 +++ b/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
 @@ -5,6 +5,9 @@ declare(strict_types=1);
@@ -1917,9 +1917,15 @@ index 0876f69..50014de 100644
      foreach ($items as $item) {
        $report_id = $item->getValue()['report_id'];
        $workspace = $item->getValue()['workspace_id'];
-@@ -85,15 +98,24 @@ class PowerBiEmbedFormatter extends FormatterBase {
+@@ -84,16 +97,30 @@ class PowerBiEmbedFormatter extends FormatterBase {
+       $report_height_units = $item->getValue()['report_height_units'];
        $report_width_units = $item->getValue()['report_width_units'];
        $report_configuration = $this->pwbiEmbed->getEmbedDataFromApi($workspace, $report_id);
++      if (empty($report_configuration)) {
++        // API call failed — getEmbedDataFromApi() already logged the error.
++        // Render nothing for this item rather than crashing the page.
++        continue;
++      }
        $token_expiration = new DrupalDateTime((string) $report_configuration['tokenExpirationDate']);
 -      $current_time = new DrupalDateTime();
 +      $current_time = $this->time->getRequestTime();
@@ -1946,7 +1952,7 @@ index 0876f69..50014de 100644
          ],
          '#type' => 'component',
          '#component' => 'pwbi:pwbi-embed',
-@@ -108,7 +130,7 @@ class PowerBiEmbedFormatter extends FormatterBase {
+@@ -108,7 +135,7 @@ class PowerBiEmbedFormatter extends FormatterBase {
          '#attached' => [
            'drupalSettings' => [
              'pwbi_embed' => [
@@ -1955,7 +1961,7 @@ index 0876f69..50014de 100644
              ],
              'language' => $langcode,
            ],
-@@ -175,20 +197,30 @@ class PowerBiEmbedFormatter extends FormatterBase {
+@@ -175,20 +202,30 @@ class PowerBiEmbedFormatter extends FormatterBase {
     * @return array <mixed>
     *   The options that will be used to embed a powerbi report.
     */
@@ -2125,7 +2131,7 @@ index 2b17ed0..2d1e54a 100644
  
    /**
 diff --git a/src/PowerBiEmbed.php b/src/PowerBiEmbed.php
-index e49c1bb..afc7f7b 100644
+index e49c1bb..3303bae 100644
 --- a/src/PowerBiEmbed.php
 +++ b/src/PowerBiEmbed.php
 @@ -6,6 +6,7 @@ namespace Drupal\pwbi;
@@ -2166,11 +2172,40 @@ index e49c1bb..afc7f7b 100644
      );
    }
  
-@@ -83,13 +96,27 @@ class PowerBiEmbed implements ContainerInjectionInterface {
+@@ -71,8 +84,22 @@ class PowerBiEmbed implements ContainerInjectionInterface {
+    *   Generic Exception can be thrown.
+    */
+   public function getEmbedDataFromApi(string $workspace, string $reportId): array {
++    $logger = $this->loggerFactory->get('pwbi');
++
+     $reportInfo = Json::decode($this->pwbiClient->getGroupReport($workspace, $reportId));
++    if (!is_array($reportInfo) || !empty($reportInfo['error'])) {
++      $msg = is_array($reportInfo) ? ($reportInfo['error']['message'] ?? 'unknown API error') : 'invalid response';
++      $logger->error('Power BI getGroupReport failed for report @id: @msg', ['@id' => $reportId, '@msg' => $msg]);
++      return [];
++    }
++
+     $pages = Json::decode($this->pwbiClient->getPages($workspace, $reportId));
++    if (!is_array($pages) || empty($pages['value'])) {
++      $msg = is_array($pages) ? ($pages['error']['message'] ?? 'no pages returned') : 'invalid response';
++      $logger->error('Power BI getPages failed for report @id: @msg', ['@id' => $reportId, '@msg' => $msg]);
++      return [];
++    }
++
+     $embedTokenBody = [
+       'datasets' => [
+         ['id' => $reportInfo['datasetId']],
+@@ -83,13 +110,33 @@ class PowerBiEmbed implements ContainerInjectionInterface {
      ];
  
      $embedToken = Json::decode($this->pwbiClient->getEmbedToken($embedTokenBody));
 -    return [
++    if (!is_array($embedToken) || empty($embedToken['token'])) {
++      $msg = is_array($embedToken) ? ($embedToken['error']['message'] ?? 'no token returned') : 'invalid response';
++      $logger->error('Power BI getEmbedToken failed for report @id: @msg', ['@id' => $reportId, '@msg' => $msg]);
++      return [];
++    }
++
 +    $result = [
        'pageName' => $pages['value'][0]['name'],
        'visualName' => $pages['value'][0]['displayName'],
@@ -2459,59 +2494,63 @@ index 0000000..ff28463
 +  }
 +
 +}
-diff --git a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php b/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
-index 50014de..62fae24 100644
---- a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
-+++ b/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
-@@ -97,6 +97,11 @@ class PowerBiEmbedFormatter extends FormatterBase {
-       $report_height_units = $item->getValue()['report_height_units'];
-       $report_width_units = $item->getValue()['report_width_units'];
-       $report_configuration = $this->pwbiEmbed->getEmbedDataFromApi($workspace, $report_id);
-+      if (empty($report_configuration)) {
-+        // API call failed — getEmbedDataFromApi() already logged the error.
-+        // Render nothing for this item rather than crashing the page.
-+        continue;
-+      }
-       $token_expiration = new DrupalDateTime((string) $report_configuration['tokenExpirationDate']);
-       $current_time = $this->time->getRequestTime();
-       $cache_max_age = 0;
-diff --git a/src/PowerBiEmbed.php b/src/PowerBiEmbed.php
-index afc7f7b..3303bae 100644
---- a/src/PowerBiEmbed.php
-+++ b/src/PowerBiEmbed.php
-@@ -84,8 +84,22 @@ class PowerBiEmbed implements ContainerInjectionInterface {
-    *   Generic Exception can be thrown.
-    */
-   public function getEmbedDataFromApi(string $workspace, string $reportId): array {
-+    $logger = $this->loggerFactory->get('pwbi');
+diff --git a/components/pwbi-embed/pwbi-embed.js b/components/pwbi-embed/pwbi-embed.js
+index de0ba8f..9c880bb 100644
+--- a/components/pwbi-embed/pwbi-embed.js
++++ b/components/pwbi-embed/pwbi-embed.js
+@@ -22,6 +22,12 @@
+     const timeUntilExpiration = expiration - currentTime;
+     const minutesBefore = embedSettings.token_refresh_minutes ?? MINUTES_BEFORE_EXPIRATION;
+     const timeToUpdate = minutesBefore * 60 * 1000;
++    const minutesLeft = Math.round(timeUntilExpiration / 60000);
 +
-     $reportInfo = Json::decode($this->pwbiClient->getGroupReport($workspace, $reportId));
-+    if (!is_array($reportInfo) || !empty($reportInfo['error'])) {
-+      $msg = is_array($reportInfo) ? ($reportInfo['error']['message'] ?? 'unknown API error') : 'invalid response';
-+      $logger->error('Power BI getGroupReport failed for report @id: @msg', ['@id' => $reportId, '@msg' => $msg]);
-+      return [];
-+    }
-+
-     $pages = Json::decode($this->pwbiClient->getPages($workspace, $reportId));
-+    if (!is_array($pages) || empty($pages['value'])) {
-+      $msg = is_array($pages) ? ($pages['error']['message'] ?? 'no pages returned') : 'invalid response';
-+      $logger->error('Power BI getPages failed for report @id: @msg', ['@id' => $reportId, '@msg' => $msg]);
-+      return [];
-+    }
-+
-     $embedTokenBody = [
-       'datasets' => [
-         ['id' => $reportInfo['datasetId']],
-@@ -96,6 +110,12 @@ class PowerBiEmbed implements ContainerInjectionInterface {
-     ];
++    console.log(
++      `[pwbi] Token check — expires: ${embedSettings.tokenExpiration}, ` +
++      `~${minutesLeft}min left, refresh window: ${minutesBefore}min`
++    );
  
-     $embedToken = Json::decode($this->pwbiClient->getEmbedToken($embedTokenBody));
-+    if (!is_array($embedToken) || empty($embedToken['token'])) {
-+      $msg = is_array($embedToken) ? ($embedToken['error']['message'] ?? 'no token returned') : 'invalid response';
-+      $logger->error('Power BI getEmbedToken failed for report @id: @msg', ['@id' => $reportId, '@msg' => $msg]);
-+      return [];
+     if (timeUntilExpiration <= timeToUpdate) {
+       console.log('[pwbi] Token expiring soon, refreshing...');
+@@ -41,6 +47,12 @@
+    * @param {object} report - The Report object returned by powerbiClient.load().
+    */
+   async function updateToken(embedSettings, report) {
++    // Prevent a second refresh launching while one is already in flight.
++    if (embedSettings._refreshing) {
++      return;
 +    }
++    embedSettings._refreshing = true;
 +
-     $result = [
-       'pageName' => $pages['value'][0]['name'],
-       'visualName' => $pages['value'][0]['displayName'],
+     const { workspaceId, id: reportId, datasetId } = embedSettings;
+     const base = drupalSettings.path.baseUrl;
+     const refreshUrl = `${base}pwbi/token-refresh/${workspaceId}/${reportId}?dataset_id=${encodeURIComponent(datasetId)}`;
+@@ -72,6 +84,9 @@
+     catch (err) {
+       console.error('[pwbi] Token refresh failed', err);
+     }
++    finally {
++      embedSettings._refreshing = false;
++    }
+   }
+ 
+   const pwbiEmbed = {
+diff --git a/src/Controller/PwbiTokenRefreshController.php b/src/Controller/PwbiTokenRefreshController.php
+index ee9f46c..17fa029 100644
+--- a/src/Controller/PwbiTokenRefreshController.php
++++ b/src/Controller/PwbiTokenRefreshController.php
+@@ -96,6 +96,15 @@ class PwbiTokenRefreshController extends ControllerBase {
+       ]);
+     }
+ 
++    $this->logger('pwbi')->info(
++      'Embed token refreshed for report @report (workspace @workspace), expires @expiry.',
++      [
++        '@report'    => $report_id,
++        '@workspace' => $workspace_id,
++        '@expiry'    => $result['expiration'] ?? 'unknown',
++      ]
++    );
++
+     return new JsonResponse([
+       'token'      => $result['token'],
+       'expiration' => $result['expiration'],

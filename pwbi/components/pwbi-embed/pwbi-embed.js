@@ -22,6 +22,12 @@
     const timeUntilExpiration = expiration - currentTime;
     const minutesBefore = embedSettings.token_refresh_minutes ?? MINUTES_BEFORE_EXPIRATION;
     const timeToUpdate = minutesBefore * 60 * 1000;
+    const minutesLeft = Math.round(timeUntilExpiration / 60000);
+
+    console.log(
+      `[pwbi] Token check — expires: ${embedSettings.tokenExpiration}, ` +
+      `~${minutesLeft}min left, refresh window: ${minutesBefore}min`
+    );
 
     if (timeUntilExpiration <= timeToUpdate) {
       console.log('[pwbi] Token expiring soon, refreshing...');
@@ -41,6 +47,12 @@
    * @param {object} report - The Report object returned by powerbiClient.load().
    */
   async function updateToken(embedSettings, report) {
+    // Prevent a second refresh launching while one is already in flight.
+    if (embedSettings._refreshing) {
+      return;
+    }
+    embedSettings._refreshing = true;
+
     const { workspaceId, id: reportId, datasetId } = embedSettings;
     const base = drupalSettings.path.baseUrl;
     const refreshUrl = `${base}pwbi/token-refresh/${workspaceId}/${reportId}?dataset_id=${encodeURIComponent(datasetId)}`;
@@ -71,6 +83,9 @@
     }
     catch (err) {
       console.error('[pwbi] Token refresh failed', err);
+    }
+    finally {
+      embedSettings._refreshing = false;
     }
   }
 
