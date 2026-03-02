@@ -1,6 +1,8 @@
+diff --git a/components/pwbi-embed/pwbi-embed.js b/components/pwbi-embed/pwbi-embed.js
+index fd784bc..f5580bc 100644
 --- a/components/pwbi-embed/pwbi-embed.js
 +++ b/components/pwbi-embed/pwbi-embed.js
-@@ -1,28 +1,96 @@
+@@ -1,21 +1,88 @@
  ((Drupal) => {
 +  // Minutes before token expiration to trigger a refresh.
 +  const MINUTES_BEFORE_EXPIRATION = 10;
@@ -91,18 +93,18 @@
 -        }
 -        const arrayToken = embedSettings.accessToken.split(".");
 -        if (arrayToken.length < 2) {
+-          return;
+-        }
+-        const tokenPayload = JSON.parse(atob(arrayToken[1]));
+-        if (tokenPayload?.exp === undefined) {
 +        const alreadyEmbedded = Object.values(powerbiClient.embeds).some(
 +          (embed) => embed.element.id === embedSettings.id,
 +        );
 +        if (alreadyEmbedded) {
            return;
          }
--        const tokenPayload = JSON.parse(atob(arrayToken[1]));
--        if (tokenPayload?.exp === undefined) {
--          return;
--        }
  
-         const embedConfiguration = embedSettings;
+@@ -23,6 +90,7 @@
          if (embedConfiguration.settings === undefined) {
            embedConfiguration.settings = {};
          }
@@ -198,15 +200,11 @@
        }
      },
      detach() {},
---- a/config/install/pwbi.settings.yml
-+++ b/config/install/pwbi.settings.yml
-@@ -0,0 +1,3 @@
-+pwbi_api_endpoint: 'https://api.powerbi.com'
-+token_refresh_enabled: false
-+token_refresh_minutes: 10
+diff --git a/config/schema/pwbi.schema.yml b/config/schema/pwbi.schema.yml
+index 6397c5b..f8ad781 100644
 --- a/config/schema/pwbi.schema.yml
 +++ b/config/schema/pwbi.schema.yml
-@@ -5,6 +5,12 @@
+@@ -5,6 +5,12 @@ oauth2_client.oauth2_client.*.third_party.pwbi:
      tenant:
        type: string
        label: Tenant
@@ -219,7 +217,7 @@
      use_cert:
        type: string
        label: Use certificate
-@@ -20,6 +26,20 @@
+@@ -20,6 +26,20 @@ pwbi_embed.embed:
        type: string
        label: PowerBi Workspaces
  
@@ -240,22 +238,11 @@
  media.source.pwbi_embed_visual:
    type: media.source.field_aware
    label: '"PWBI Embed" media source configuration'
---- a/drush.services.yml
-+++ b/drush.services.yml
-@@ -0,0 +1,10 @@
-+services:
-+  pwbi.commands:
-+    class: Drupal\pwbi\Commands\PwbiCommands
-+    arguments:
-+      - '@pwbi_api.client'
-+      - '@oauth2_client.service'
-+      - '@entity_type.manager'
-+      - '@entity_field.manager'
-+    tags:
-+      - { name: drush.command }
+diff --git a/pwbi.routing.yml b/pwbi.routing.yml
+index 020547c..fb587a0 100644
 --- a/pwbi.routing.yml
 +++ b/pwbi.routing.yml
-@@ -21,3 +21,13 @@
+@@ -21,3 +21,13 @@ pwbi.embed_settings:
      _title: 'PowerBi Embed Settings'
    requirements:
      _permission: 'configure pwbi'
@@ -269,9 +256,43 @@
 +    _permission: 'access content'
 +    workspace_id: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
 +    report_id: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+diff --git a/pwbi.services.yml b/pwbi.services.yml
+index 2bd86b4..27e0fcf 100644
+--- a/pwbi.services.yml
++++ b/pwbi.services.yml
+@@ -3,11 +3,11 @@ services:
+     class: Drupal\pwbi\ConfigurationCredentialProvider
+     decorates: oauth2_client.service.credentials
+     public: false
+-    arguments: ['@state', '@entity_type.manager', '@pwbi.cert_manager']
++    arguments: ['@state', '@entity_type.manager', '@pwbi.cert_manager', '@config.factory']
+ 
+   pwbi_api.client:
+     class: '\Drupal\pwbi\Api\PowerBiClient'
+-    arguments: ['@state' ,'@logger.factory', '@http_client', '@oauth2_client.service', '@file_url_generator', '@file_system']
++    arguments: ['@state', '@logger.factory', '@http_client', '@oauth2_client.service', '@file_url_generator', '@file_system', '@config.factory']
+ 
+   pwbi_embed.embed:
+     class: '\Drupal\pwbi\PowerBiEmbed'
+@@ -19,10 +19,10 @@ services:
+ 
+   pwbi.oauth_form_changes:
+     class: '\Drupal\pwbi\Oauth2Form\FormChanges'
+-    arguments: ['@pwbi.cert_manager']
++    arguments: ['@config.factory', '@pwbi.cert_manager']
+ 
+   pwbi.pwbi_cache_response_subscriber:
+     class: Drupal\pwbi\EventSubscriber\PwbiResponseSubscriber
+     arguments: ['@datetime.time', '@current_user']
+     tags:
+-      - { name: event_subscriber }
+\ No newline at end of file
++      - { name: event_subscriber }
+diff --git a/src/Api/PowerBiClient.php b/src/Api/PowerBiClient.php
+index 34987a1..6a4afa2 100644
 --- a/src/Api/PowerBiClient.php
 +++ b/src/Api/PowerBiClient.php
-@@ -5,6 +5,7 @@
+@@ -5,6 +5,7 @@ declare(strict_types=1);
  namespace Drupal\pwbi\Api;
  
  use Drupal\Component\Serialization\Json;
@@ -279,7 +300,7 @@
  use Drupal\Core\DependencyInjection\ContainerInjectionInterface;
  use Drupal\Core\File\FileSystemInterface;
  use Drupal\Core\File\FileUrlGenerator;
-@@ -20,14 +21,12 @@
+@@ -20,14 +21,12 @@ use Symfony\Component\DependencyInjection\ContainerInterface;
   */
  class PowerBiClient implements ContainerInjectionInterface {
  
@@ -300,7 +321,7 @@
  
    public function __construct(
      protected readonly StateInterface $state,
-@@ -36,6 +35,7 @@
+@@ -36,6 +35,7 @@ class PowerBiClient implements ContainerInjectionInterface {
      protected readonly Oauth2ClientService $auth,
      protected readonly FileUrlGenerator $fileUrlGenerator,
      protected readonly FileSystemInterface $fileSystem,
@@ -308,7 +329,7 @@
    ) {}
  
    /**
-@@ -50,10 +50,23 @@
+@@ -50,9 +50,22 @@ class PowerBiClient implements ContainerInjectionInterface {
        $container->get('oauth2_client.service'),
        $container->get('file_url_generator'),
        $container->get('file_system'),
@@ -316,7 +337,7 @@
      );
    }
  
-   /**
++  /**
 +   * Get the API root URL based on the configured endpoint.
 +   *
 +   * @return string
@@ -328,11 +349,10 @@
 +    return rtrim((string) $endpoint, '/');
 +  }
 +
-+  /**
+   /**
     * Run request to PowerBi endpoint.
     *
-    * @param string $httpMethod
-@@ -120,7 +133,7 @@
+@@ -120,7 +133,7 @@ class PowerBiClient implements ContainerInjectionInterface {
     * @throws \Exception
     */
    public function getEmbedToken(array $body): string {
@@ -341,7 +361,7 @@
    }
  
    /**
-@@ -137,7 +150,7 @@
+@@ -137,7 +150,7 @@ class PowerBiClient implements ContainerInjectionInterface {
     * @throws \Exception
     */
    public function executeQuery(string $datasetId, array $body): string {
@@ -350,7 +370,7 @@
      return $this->connect('post', $endpoint, $body);
    }
  
-@@ -157,7 +170,7 @@
+@@ -157,7 +170,7 @@ class PowerBiClient implements ContainerInjectionInterface {
     * @throws \Exception
     */
    public function executeGroupQuery(string $workspace, string $datasetId, array $body): string {
@@ -359,7 +379,7 @@
      return $this->connect('post', $endpoint, $body);
    }
  
-@@ -177,7 +190,7 @@
+@@ -177,7 +190,7 @@ class PowerBiClient implements ContainerInjectionInterface {
     * @throws \Exception
     */
    public function exportGroupReportToFile(string $workspace, string $reportId, array $body): string {
@@ -368,7 +388,7 @@
      return $this->connect('post', $endpoint, $body);
    }
  
-@@ -198,7 +211,7 @@
+@@ -198,7 +211,7 @@ class PowerBiClient implements ContainerInjectionInterface {
     *   Can throw a generic exception.
     */
    public function getGroupExportToFileStatus(string $workspace, string $reportId, string $exportId): string {
@@ -377,7 +397,7 @@
      return $this->connect('get', $endpoint);
    }
  
-@@ -223,7 +236,7 @@
+@@ -223,7 +236,7 @@ class PowerBiClient implements ContainerInjectionInterface {
     *   Can throw a generic exception.
     */
    public function getGroupExportFile(string $workspace, string $reportId, string $exportId, string $filePath, string $filename): string {
@@ -386,7 +406,7 @@
      $filePath = $filePath . '/' . $filename;
      $fileRealPath = $this->fileSystem->realpath($filePath);
      $resource = fopen($fileRealPath, 'w+');
-@@ -251,7 +264,7 @@
+@@ -251,7 +264,7 @@ class PowerBiClient implements ContainerInjectionInterface {
     *   Can throw a generic exception.
     */
    public function getGroupReport(string $workspace, string $reportId): string {
@@ -395,7 +415,7 @@
      return $this->connect('get', $endpoint);
    }
  
-@@ -270,7 +283,7 @@
+@@ -270,7 +283,7 @@ class PowerBiClient implements ContainerInjectionInterface {
     *   Can throw a generic exception.
     */
    public function getPages(string $workspace, string $reportId): string {
@@ -404,7 +424,294 @@
      return $this->connect('get', $endpoint);
    }
  
---- a/src/Commands/PwbiCommands.php
+diff --git a/src/Form/PowerBiEmbedConfigForm.php b/src/Form/PowerBiEmbedConfigForm.php
+index 5c2b2e7..86c26f0 100644
+--- a/src/Form/PowerBiEmbedConfigForm.php
++++ b/src/Form/PowerBiEmbedConfigForm.php
+@@ -4,7 +4,8 @@ declare(strict_types=1);
+ 
+ namespace Drupal\pwbi\Form;
+ 
+-use Drupal\Core\Form\FormBase;
++use Drupal\Core\Config\ConfigFactoryInterface;
++use Drupal\Core\Form\ConfigFormBase;
+ use Drupal\Core\Form\FormStateInterface;
+ use Drupal\pwbi\PowerBiEmbed;
+ use Symfony\Component\DependencyInjection\ContainerInterface;
+@@ -12,11 +13,14 @@ use Symfony\Component\DependencyInjection\ContainerInterface;
+ /**
+  * Configuration form to access PowerBi.
+  */
+-class PowerBiEmbedConfigForm extends FormBase {
++class PowerBiEmbedConfigForm extends ConfigFormBase {
+ 
+   public function __construct(
++    ConfigFactoryInterface $config_factory,
+     protected readonly PowerBiEmbed $pwbiEmbed,
+-  ) {}
++  ) {
++    parent::__construct($config_factory);
++  }
+ 
+   /**
+    * {@inheritdoc}
+@@ -24,19 +28,20 @@ class PowerBiEmbedConfigForm extends FormBase {
+   public static function create(ContainerInterface $container): static {
+     // @phpstan-ignore-next-line
+     return new static(
++      $container->get('config.factory'),
+       $container->get('pwbi_embed.embed'),
+     );
+   }
+ 
+   /**
+-   * Getter method for Form ID.
+-   *
+-   * The form ID is used in implementations of hook_form_alter() to allow other
+-   * modules to alter the render array built by this form controller. It must be
+-   * unique site wide. It normally starts with the providing module's name.
+-   *
+-   * @return string
+-   *   The unique ID of the form defined by this class.
++   * {@inheritdoc}
++   */
++  protected function getEditableConfigNames(): array {
++    return ['pwbi.settings'];
++  }
++
++  /**
++   * {@inheritdoc}
+    */
+   public function getFormId(): string {
+     return 'pwbi_settings';
+@@ -46,34 +51,81 @@ class PowerBiEmbedConfigForm extends FormBase {
+    * {@inheritdoc}
+    */
+   public function buildForm(array $form, FormStateInterface $form_state): array {
++    $form = parent::buildForm($form, $form_state);
++
+     $settings = $this->pwbiEmbed->getEmbedConfiguration();
+     $form['pwbi_workspaces'] = [
+       '#type' => 'textarea',
+       '#title' => $this->t('PowerBi Workspaces'),
+       '#default_value' => $settings['pwbi_workspaces'] ?? '',
+       '#required' => TRUE,
+-      '#description' => $this->t('Add here a list of available workspaces with the form workspaceid|workspacename, for example: <div>weqrdsftertert|My workspace</div><div>fjkyurvadsfcbdwasdfg|Another workspace</div>'),
++      '#description' => $this->t('Add here a list of available workspaces with the form workspaceid|work space name, for example: <div>1234512345|My workspace</div><div>112345465767|Another workspace</div>'),
++    ];
++
++    $pwbi_settings = $this->config('pwbi.settings');
++
++    $form['pwbi_api_endpoint'] = [
++      '#type' => 'select',
++      '#title' => $this->t('Power BI API endpoint'),
++      '#default_value' => $pwbi_settings->get('pwbi_api_endpoint') ?? 'https://api.powerbi.com',
++      '#options' => [
++        'https://api.powerbi.com'         => $this->t('Commercial (api.powerbi.com)'),
++        'https://api.powerbigov.us'        => $this->t('US Government GCC (api.powerbigov.us)'),
++        'https://api.high.powerbigov.us'   => $this->t('US Government GCC High (api.high.powerbigov.us)'),
++        'https://api.mil.powerbigov.us'    => $this->t('US DoD (api.mil.powerbigov.us)'),
++      ],
++      '#description' => $this->t('Select the Power BI REST API root for your tenant cloud environment.'),
+     ];
+-    $form['actions']['submit'] = [
+-      '#type' => 'submit',
+-      '#value' => $this->t('Submit'),
+-      '#button_type' => 'primary',
++
++    $form['token_refresh_enabled'] = [
++      '#type' => 'checkbox',
++      '#title' => $this->t('Enable automatic embed token refresh'),
++      '#default_value' => $pwbi_settings->get('token_refresh_enabled') ?? FALSE,
++      '#description' => $this->t('Silently renew embed tokens before they expire, preserving all user state.'),
+     ];
++
++    $form['token_refresh_minutes'] = [
++      '#type' => 'number',
++      '#title' => $this->t('Minutes before expiry to refresh'),
++      '#default_value' => $pwbi_settings->get('token_refresh_minutes') ?? 10,
++      '#min' => 1,
++      '#max' => 55,
++      '#description' => $this->t('Request a new token this many minutes before the current one expires.'),
++      '#states' => [
++        'visible' => [':input[name="token_refresh_enabled"]' => ['checked' => TRUE]],
++      ],
++    ];
++
+     return $form;
+   }
+ 
+   /**
+    * {@inheritdoc}
+    */
+-  public function submitForm(array &$form, FormStateInterface $form_state): void {
+-    $values = [
+-      'pwbi_workspaces',
+-    ];
+-    $settings = [];
+-    foreach ($values as $value) {
+-      $settings[$value] = $form_state->getValue($value);
++  public function validateForm(array &$form, FormStateInterface $form_state): void {
++    $minutes = (int) $form_state->getValue('token_refresh_minutes');
++    if ($minutes < 1 || $minutes > 55) {
++      $form_state->setErrorByName('token_refresh_minutes', $this->t('Minutes must be between 1 and 55.'));
+     }
++    parent::validateForm($form, $form_state);
++  }
++
++  /**
++   * {@inheritdoc}
++   */
++  public function submitForm(array &$form, FormStateInterface $form_state): void {
++    // Existing: save workspaces to State API.
++    $settings = ['pwbi_workspaces' => $form_state->getValue('pwbi_workspaces')];
+     $this->pwbiEmbed->setEmbedConfiguration($settings);
++
++    // New: save API settings to Config API.
++    $this->config('pwbi.settings')
++      ->set('pwbi_api_endpoint', $form_state->getValue('pwbi_api_endpoint'))
++      ->set('token_refresh_enabled', (bool) $form_state->getValue('token_refresh_enabled'))
++      ->set('token_refresh_minutes', (int) $form_state->getValue('token_refresh_minutes'))
++      ->save();
++
++    parent::submitForm($form, $form_state);
+   }
+ 
+ }
+diff --git a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php b/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
+index 0876f69..2856a64 100644
+--- a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
++++ b/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
+@@ -5,6 +5,8 @@ declare(strict_types=1);
+ namespace Drupal\pwbi\Plugin\Field\FieldFormatter;
+ 
+ use Drupal\breakpoint\BreakpointManager;
++use Drupal\Component\Datetime\TimeInterface;
++use Drupal\Core\Config\ConfigFactoryInterface;
+ use Drupal\Core\Datetime\DrupalDateTime;
+ use Drupal\Core\Field\FieldDefinitionInterface;
+ use Drupal\Core\Field\FieldItemListInterface;
+@@ -42,12 +44,14 @@ class PowerBiEmbedFormatter extends FormatterBase {
+     protected PowerBiEmbed $pwbiEmbed,
+     protected BreakpointManager $breakpointManager,
+     protected EventDispatcherInterface $dispatcher,
++    protected TimeInterface $time,
++    protected readonly ConfigFactoryInterface $configFactory,
+   ) {
+     parent::__construct($plugin_id, $plugin_definition, $field_definition, $settings, $label, $view_mode, $third_party_settings);
+   }
+ 
+   /**
+-   * {@inheritDoc}
++   * {@inheritdoc}
+    */
+   public static function create(ContainerInterface $container, array $configuration, $plugin_id, $plugin_definition): static {
+     // @phpstan-ignore-next-line
+@@ -62,6 +66,8 @@ class PowerBiEmbedFormatter extends FormatterBase {
+       $container->get('pwbi_embed.embed'),
+       $container->get('breakpoint.manager'),
+       $container->get('event_dispatcher'),
++      $container->get('datetime.time'),
++      $container->get('config.factory'),
+     );
+   }
+ 
+@@ -85,10 +91,10 @@ class PowerBiEmbedFormatter extends FormatterBase {
+       $report_width_units = $item->getValue()['report_width_units'];
+       $report_configuration = $this->pwbiEmbed->getEmbedDataFromApi($workspace, $report_id);
+       $token_expiration = new DrupalDateTime((string) $report_configuration['tokenExpirationDate']);
+-      $current_time = new DrupalDateTime();
++      $current_time = $this->time->getRequestTime();
+       $cache_max_age = 0;
+-      if ($token_expiration->getTimestamp() > $current_time->getTimestamp()) {
+-        $cache_max_age = $token_expiration->getTimestamp() - $current_time->getTimestamp();
++      if ($token_expiration->getTimestamp() > $current_time) {
++        $cache_max_age = $token_expiration->getTimestamp() - $current_time;
+       }
+       $embed_array = [
+         '#cache' => [
+@@ -176,19 +182,30 @@ class PowerBiEmbedFormatter extends FormatterBase {
+    *   The options that will be used to embed a powerbi report.
+    */
+   private function buildEmbedConfiguration(PowerBiEmbedField $item, array $report_configuration, string $langcode): array {
+-    $embed_pptions = $report_configuration;
+-    $embed_pptions['tokenType'] = $item->getValue()['token_type'];
+-    $embed_pptions['type'] = $item->getValue()['embed_type'];
+-    $embed_pptions['id'] = $item->getValue()['report_id'];
+-    $embed_pptions['settings']['layoutType'] = (int) $item->getValue()['report_layout'];
+-    $embed_pptions['settings']['localeSettings'] = $this->getPowerBiLangcode($langcode);
+-    $embed_pptions['tokenType'] = (int) ($embed_pptions['tokenType'] === 'Embed');
+-    foreach ($embed_pptions as $key => $embedOption) {
++    $embed_options = $report_configuration;
++    $embed_options['tokenType'] = $item->getValue()['token_type'];
++    $embed_options['type'] = $item->getValue()['embed_type'];
++    $embed_options['id'] = $item->getValue()['report_id'];
++    $embed_options['settings']['layoutType'] = (int) $item->getValue()['report_layout'];
++    $embed_options['settings']['localeSettings'] = $this->getPowerBiLangcode($langcode);
++    $embed_options['tokenType'] = (int) ($embed_options['tokenType'] === 'Embed');
++
++    // Pass workspaceId so the JS refresh call can address the right workspace.
++    $embed_options['workspaceId'] = $item->getValue()['workspace_id'];
++
++    foreach ($embed_options as $key => $embedOption) {
+       if (empty($embedOption)) {
+-        unset($embed_pptions[$key]);
++        unset($embed_options[$key]);
+       }
+     }
+-    return $embed_pptions;
++
++    // Set token refresh config after the empty() cleanup loop since empty(FALSE)
++    // and empty(0) are truthy and would strip these values if set beforehand.
++    $pwbi_settings = $this->configFactory->get('pwbi.settings');
++    $embed_options['token_refresh_enabled'] = (bool) ($pwbi_settings->get('token_refresh_enabled') ?? FALSE);
++    $embed_options['token_refresh_minutes'] = (int) ($pwbi_settings->get('token_refresh_minutes') ?? 10);
++
++    return $embed_options;
+   }
+ 
+ }
+diff --git a/src/PowerBiEmbed.php b/src/PowerBiEmbed.php
+index e49c1bb..7badb1b 100644
+--- a/src/PowerBiEmbed.php
++++ b/src/PowerBiEmbed.php
+@@ -89,6 +89,7 @@ class PowerBiEmbed implements ContainerInjectionInterface {
+       'embedUrl' => $reportInfo['embedUrl'],
+       'accessToken' => $embedToken['token'],
+       'tokenExpirationDate' => $embedToken['expiration'],
++      'datasetId' => $reportInfo['datasetId'],
+     ];
+   }
+ 
+diff --git a/config/install/pwbi.settings.yml b/config/install/pwbi.settings.yml
+new file mode 100644
+index 0000000..48fbd42
+--- /dev/null
++++ b/config/install/pwbi.settings.yml
+@@ -0,0 +1,3 @@
++pwbi_api_endpoint: 'https://api.powerbi.com'
++token_refresh_enabled: false
++token_refresh_minutes: 10
+diff --git a/drush.services.yml b/drush.services.yml
+new file mode 100644
+index 0000000..6fea5ac
+--- /dev/null
++++ b/drush.services.yml
+@@ -0,0 +1,10 @@
++services:
++  pwbi.commands:
++    class: Drupal\pwbi\Commands\PwbiCommands
++    arguments:
++      - '@pwbi_api.client'
++      - '@oauth2_client.service'
++      - '@entity_type.manager'
++      - '@entity_field.manager'
++    tags:
++      - { name: drush.command }
+diff --git a/src/Commands/PwbiCommands.php b/src/Commands/PwbiCommands.php
+new file mode 100644
+index 0000000..5c239ac
+--- /dev/null
 +++ b/src/Commands/PwbiCommands.php
 @@ -0,0 +1,293 @@
 +<?php
@@ -700,7 +1007,10 @@
 +  }
 +
 +}
---- a/src/Controller/PwbiTokenRefreshController.php
+diff --git a/src/Controller/PwbiTokenRefreshController.php b/src/Controller/PwbiTokenRefreshController.php
+new file mode 100644
+index 0000000..b0a5623
+--- /dev/null
 +++ b/src/Controller/PwbiTokenRefreshController.php
 @@ -0,0 +1,146 @@
 +<?php
@@ -849,257 +1159,3 @@
 +  }
 +
 +}
---- a/src/Form/PowerBiEmbedConfigForm.php
-+++ b/src/Form/PowerBiEmbedConfigForm.php
-@@ -4,7 +4,8 @@
- 
- namespace Drupal\pwbi\Form;
- 
--use Drupal\Core\Form\FormBase;
-+use Drupal\Core\Config\ConfigFactoryInterface;
-+use Drupal\Core\Form\ConfigFormBase;
- use Drupal\Core\Form\FormStateInterface;
- use Drupal\pwbi\PowerBiEmbed;
- use Symfony\Component\DependencyInjection\ContainerInterface;
-@@ -12,11 +13,14 @@
- /**
-  * Configuration form to access PowerBi.
-  */
--class PowerBiEmbedConfigForm extends FormBase {
-+class PowerBiEmbedConfigForm extends ConfigFormBase {
- 
-   public function __construct(
-+    ConfigFactoryInterface $config_factory,
-     protected readonly PowerBiEmbed $pwbiEmbed,
--  ) {}
-+  ) {
-+    parent::__construct($config_factory);
-+  }
- 
-   /**
-    * {@inheritdoc}
-@@ -24,20 +28,21 @@
-   public static function create(ContainerInterface $container): static {
-     // @phpstan-ignore-next-line
-     return new static(
-+      $container->get('config.factory'),
-       $container->get('pwbi_embed.embed'),
-     );
-   }
- 
-   /**
--   * Getter method for Form ID.
--   *
--   * The form ID is used in implementations of hook_form_alter() to allow other
--   * modules to alter the render array built by this form controller. It must be
--   * unique site wide. It normally starts with the providing module's name.
--   *
--   * @return string
--   *   The unique ID of the form defined by this class.
-+   * {@inheritdoc}
-    */
-+  protected function getEditableConfigNames(): array {
-+    return ['pwbi.settings'];
-+  }
-+
-+  /**
-+   * {@inheritdoc}
-+   */
-   public function getFormId(): string {
-     return 'pwbi_settings';
-   }
-@@ -46,34 +51,81 @@
-    * {@inheritdoc}
-    */
-   public function buildForm(array $form, FormStateInterface $form_state): array {
-+    $form = parent::buildForm($form, $form_state);
-+
-     $settings = $this->pwbiEmbed->getEmbedConfiguration();
-     $form['pwbi_workspaces'] = [
-       '#type' => 'textarea',
-       '#title' => $this->t('PowerBi Workspaces'),
-       '#default_value' => $settings['pwbi_workspaces'] ?? '',
-       '#required' => TRUE,
--      '#description' => $this->t('Add here a list of available workspaces with the form workspaceid|workspacename, for example: <div>weqrdsftertert|My workspace</div><div>fjkyurvadsfcbdwasdfg|Another workspace</div>'),
-+      '#description' => $this->t('Add here a list of available workspaces with the form workspaceid|work space name, for example: <div>1234512345|My workspace</div><div>112345465767|Another workspace</div>'),
-     ];
--    $form['actions']['submit'] = [
--      '#type' => 'submit',
--      '#value' => $this->t('Submit'),
--      '#button_type' => 'primary',
-+
-+    $pwbi_settings = $this->config('pwbi.settings');
-+
-+    $form['pwbi_api_endpoint'] = [
-+      '#type' => 'select',
-+      '#title' => $this->t('Power BI API endpoint'),
-+      '#default_value' => $pwbi_settings->get('pwbi_api_endpoint') ?? 'https://api.powerbi.com',
-+      '#options' => [
-+        'https://api.powerbi.com'         => $this->t('Commercial (api.powerbi.com)'),
-+        'https://api.powerbigov.us'        => $this->t('US Government GCC (api.powerbigov.us)'),
-+        'https://api.high.powerbigov.us'   => $this->t('US Government GCC High (api.high.powerbigov.us)'),
-+        'https://api.mil.powerbigov.us'    => $this->t('US DoD (api.mil.powerbigov.us)'),
-+      ],
-+      '#description' => $this->t('Select the Power BI REST API root for your tenant cloud environment.'),
-     ];
-+
-+    $form['token_refresh_enabled'] = [
-+      '#type' => 'checkbox',
-+      '#title' => $this->t('Enable automatic embed token refresh'),
-+      '#default_value' => $pwbi_settings->get('token_refresh_enabled') ?? FALSE,
-+      '#description' => $this->t('Silently renew embed tokens before they expire, preserving all user state.'),
-+    ];
-+
-+    $form['token_refresh_minutes'] = [
-+      '#type' => 'number',
-+      '#title' => $this->t('Minutes before expiry to refresh'),
-+      '#default_value' => $pwbi_settings->get('token_refresh_minutes') ?? 10,
-+      '#min' => 1,
-+      '#max' => 55,
-+      '#description' => $this->t('Request a new token this many minutes before the current one expires.'),
-+      '#states' => [
-+        'visible' => [':input[name="token_refresh_enabled"]' => ['checked' => TRUE]],
-+      ],
-+    ];
-+
-     return $form;
-   }
- 
-   /**
-    * {@inheritdoc}
-    */
--  public function submitForm(array &$form, FormStateInterface $form_state): void {
--    $values = [
--      'pwbi_workspaces',
--    ];
--    $settings = [];
--    foreach ($values as $value) {
--      $settings[$value] = $form_state->getValue($value);
-+  public function validateForm(array &$form, FormStateInterface $form_state): void {
-+    $minutes = (int) $form_state->getValue('token_refresh_minutes');
-+    if ($minutes < 1 || $minutes > 55) {
-+      $form_state->setErrorByName('token_refresh_minutes', $this->t('Minutes must be between 1 and 55.'));
-     }
-+    parent::validateForm($form, $form_state);
-+  }
-+
-+  /**
-+   * {@inheritdoc}
-+   */
-+  public function submitForm(array &$form, FormStateInterface $form_state): void {
-+    // Existing: save workspaces to State API.
-+    $settings = ['pwbi_workspaces' => $form_state->getValue('pwbi_workspaces')];
-     $this->pwbiEmbed->setEmbedConfiguration($settings);
-+
-+    // New: save API settings to Config API.
-+    $this->config('pwbi.settings')
-+      ->set('pwbi_api_endpoint', $form_state->getValue('pwbi_api_endpoint'))
-+      ->set('token_refresh_enabled', (bool) $form_state->getValue('token_refresh_enabled'))
-+      ->set('token_refresh_minutes', (int) $form_state->getValue('token_refresh_minutes'))
-+      ->save();
-+
-+    parent::submitForm($form, $form_state);
-   }
- 
- }
---- a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
-+++ b/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
-@@ -5,6 +5,8 @@
- namespace Drupal\pwbi\Plugin\Field\FieldFormatter;
- 
- use Drupal\breakpoint\BreakpointManager;
-+use Drupal\Component\Datetime\TimeInterface;
-+use Drupal\Core\Config\ConfigFactoryInterface;
- use Drupal\Core\Datetime\DrupalDateTime;
- use Drupal\Core\Field\FieldDefinitionInterface;
- use Drupal\Core\Field\FieldItemListInterface;
-@@ -42,12 +44,14 @@
-     protected PowerBiEmbed $pwbiEmbed,
-     protected BreakpointManager $breakpointManager,
-     protected EventDispatcherInterface $dispatcher,
-+    protected TimeInterface $time,
-+    protected readonly ConfigFactoryInterface $configFactory,
-   ) {
-     parent::__construct($plugin_id, $plugin_definition, $field_definition, $settings, $label, $view_mode, $third_party_settings);
-   }
- 
-   /**
--   * {@inheritDoc}
-+   * {@inheritdoc}
-    */
-   public static function create(ContainerInterface $container, array $configuration, $plugin_id, $plugin_definition): static {
-     // @phpstan-ignore-next-line
-@@ -62,6 +66,8 @@
-       $container->get('pwbi_embed.embed'),
-       $container->get('breakpoint.manager'),
-       $container->get('event_dispatcher'),
-+      $container->get('datetime.time'),
-+      $container->get('config.factory'),
-     );
-   }
- 
-@@ -85,10 +91,10 @@
-       $report_width_units = $item->getValue()['report_width_units'];
-       $report_configuration = $this->pwbiEmbed->getEmbedDataFromApi($workspace, $report_id);
-       $token_expiration = new DrupalDateTime((string) $report_configuration['tokenExpirationDate']);
--      $current_time = new DrupalDateTime();
-+      $current_time = $this->time->getRequestTime();
-       $cache_max_age = 0;
--      if ($token_expiration->getTimestamp() > $current_time->getTimestamp()) {
--        $cache_max_age = $token_expiration->getTimestamp() - $current_time->getTimestamp();
-+      if ($token_expiration->getTimestamp() > $current_time) {
-+        $cache_max_age = $token_expiration->getTimestamp() - $current_time;
-       }
-       $embed_array = [
-         '#cache' => [
-@@ -176,19 +182,30 @@
-    *   The options that will be used to embed a powerbi report.
-    */
-   private function buildEmbedConfiguration(PowerBiEmbedField $item, array $report_configuration, string $langcode): array {
--    $embed_pptions = $report_configuration;
--    $embed_pptions['tokenType'] = $item->getValue()['token_type'];
--    $embed_pptions['type'] = $item->getValue()['embed_type'];
--    $embed_pptions['id'] = $item->getValue()['report_id'];
--    $embed_pptions['settings']['layoutType'] = (int) $item->getValue()['report_layout'];
--    $embed_pptions['settings']['localeSettings'] = $this->getPowerBiLangcode($langcode);
--    $embed_pptions['tokenType'] = (int) ($embed_pptions['tokenType'] === 'Embed');
--    foreach ($embed_pptions as $key => $embedOption) {
-+    $embed_options = $report_configuration;
-+    $embed_options['tokenType'] = $item->getValue()['token_type'];
-+    $embed_options['type'] = $item->getValue()['embed_type'];
-+    $embed_options['id'] = $item->getValue()['report_id'];
-+    $embed_options['settings']['layoutType'] = (int) $item->getValue()['report_layout'];
-+    $embed_options['settings']['localeSettings'] = $this->getPowerBiLangcode($langcode);
-+    $embed_options['tokenType'] = (int) ($embed_options['tokenType'] === 'Embed');
-+
-+    // Pass workspaceId so the JS refresh call can address the right workspace.
-+    $embed_options['workspaceId'] = $item->getValue()['workspace_id'];
-+
-+    foreach ($embed_options as $key => $embedOption) {
-       if (empty($embedOption)) {
--        unset($embed_pptions[$key]);
-+        unset($embed_options[$key]);
-       }
-     }
--    return $embed_pptions;
-+
-+    // Set token refresh config after the empty() cleanup loop since empty(FALSE)
-+    // and empty(0) are truthy and would strip these values if set beforehand.
-+    $pwbi_settings = $this->configFactory->get('pwbi.settings');
-+    $embed_options['token_refresh_enabled'] = (bool) ($pwbi_settings->get('token_refresh_enabled') ?? FALSE);
-+    $embed_options['token_refresh_minutes'] = (int) ($pwbi_settings->get('token_refresh_minutes') ?? 10);
-+
-+    return $embed_options;
-   }
- 
- }
---- a/src/PowerBiEmbed.php
-+++ b/src/PowerBiEmbed.php
-@@ -89,6 +89,7 @@
-       'embedUrl' => $reportInfo['embedUrl'],
-       'accessToken' => $embedToken['token'],
-       'tokenExpirationDate' => $embedToken['expiration'],
-+      'datasetId' => $reportInfo['datasetId'],
-     ];
-   }
- 

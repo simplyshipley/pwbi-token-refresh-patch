@@ -1,4 +1,7 @@
---- a/drush.services.yml
+diff --git a/drush.services.yml b/drush.services.yml
+new file mode 100644
+index 0000000..6fea5ac
+--- /dev/null
 +++ b/drush.services.yml
 @@ -0,0 +1,10 @@
 +services:
@@ -11,7 +14,10 @@
 +      - '@entity_field.manager'
 +    tags:
 +      - { name: drush.command }
---- a/src/Commands/PwbiCommands.php
+diff --git a/src/Commands/PwbiCommands.php b/src/Commands/PwbiCommands.php
+new file mode 100644
+index 0000000..5c239ac
+--- /dev/null
 +++ b/src/Commands/PwbiCommands.php
 @@ -0,0 +1,293 @@
 +<?php

@@ -1,6 +1,8 @@
+diff --git a/components/pwbi-embed/pwbi-embed.js b/components/pwbi-embed/pwbi-embed.js
+index fd784bc..f5580bc 100644
 --- a/components/pwbi-embed/pwbi-embed.js
 +++ b/components/pwbi-embed/pwbi-embed.js
-@@ -1,28 +1,96 @@
+@@ -1,21 +1,88 @@
  ((Drupal) => {
 +  // Minutes before token expiration to trigger a refresh.
 +  const MINUTES_BEFORE_EXPIRATION = 10;
@@ -91,18 +93,18 @@
 -        }
 -        const arrayToken = embedSettings.accessToken.split(".");
 -        if (arrayToken.length < 2) {
+-          return;
+-        }
+-        const tokenPayload = JSON.parse(atob(arrayToken[1]));
+-        if (tokenPayload?.exp === undefined) {
 +        const alreadyEmbedded = Object.values(powerbiClient.embeds).some(
 +          (embed) => embed.element.id === embedSettings.id,
 +        );
 +        if (alreadyEmbedded) {
            return;
          }
--        const tokenPayload = JSON.parse(atob(arrayToken[1]));
--        if (tokenPayload?.exp === undefined) {
--          return;
--        }
  
-         const embedConfiguration = embedSettings;
+@@ -23,6 +90,7 @@
          if (embedConfiguration.settings === undefined) {
            embedConfiguration.settings = {};
          }
@@ -198,9 +200,11 @@
        }
      },
      detach() {},
+diff --git a/pwbi.routing.yml b/pwbi.routing.yml
+index 020547c..fb587a0 100644
 --- a/pwbi.routing.yml
 +++ b/pwbi.routing.yml
-@@ -21,3 +21,13 @@
+@@ -21,3 +21,13 @@ pwbi.embed_settings:
      _title: 'PowerBi Embed Settings'
    requirements:
      _permission: 'configure pwbi'
@@ -214,7 +218,115 @@
 +    _permission: 'access content'
 +    workspace_id: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
 +    report_id: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
---- a/src/Controller/PwbiTokenRefreshController.php
+diff --git a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php b/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
+index 0876f69..2856a64 100644
+--- a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
++++ b/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
+@@ -5,6 +5,8 @@ declare(strict_types=1);
+ namespace Drupal\pwbi\Plugin\Field\FieldFormatter;
+ 
+ use Drupal\breakpoint\BreakpointManager;
++use Drupal\Component\Datetime\TimeInterface;
++use Drupal\Core\Config\ConfigFactoryInterface;
+ use Drupal\Core\Datetime\DrupalDateTime;
+ use Drupal\Core\Field\FieldDefinitionInterface;
+ use Drupal\Core\Field\FieldItemListInterface;
+@@ -42,12 +44,14 @@ class PowerBiEmbedFormatter extends FormatterBase {
+     protected PowerBiEmbed $pwbiEmbed,
+     protected BreakpointManager $breakpointManager,
+     protected EventDispatcherInterface $dispatcher,
++    protected TimeInterface $time,
++    protected readonly ConfigFactoryInterface $configFactory,
+   ) {
+     parent::__construct($plugin_id, $plugin_definition, $field_definition, $settings, $label, $view_mode, $third_party_settings);
+   }
+ 
+   /**
+-   * {@inheritDoc}
++   * {@inheritdoc}
+    */
+   public static function create(ContainerInterface $container, array $configuration, $plugin_id, $plugin_definition): static {
+     // @phpstan-ignore-next-line
+@@ -62,6 +66,8 @@ class PowerBiEmbedFormatter extends FormatterBase {
+       $container->get('pwbi_embed.embed'),
+       $container->get('breakpoint.manager'),
+       $container->get('event_dispatcher'),
++      $container->get('datetime.time'),
++      $container->get('config.factory'),
+     );
+   }
+ 
+@@ -85,10 +91,10 @@ class PowerBiEmbedFormatter extends FormatterBase {
+       $report_width_units = $item->getValue()['report_width_units'];
+       $report_configuration = $this->pwbiEmbed->getEmbedDataFromApi($workspace, $report_id);
+       $token_expiration = new DrupalDateTime((string) $report_configuration['tokenExpirationDate']);
+-      $current_time = new DrupalDateTime();
++      $current_time = $this->time->getRequestTime();
+       $cache_max_age = 0;
+-      if ($token_expiration->getTimestamp() > $current_time->getTimestamp()) {
+-        $cache_max_age = $token_expiration->getTimestamp() - $current_time->getTimestamp();
++      if ($token_expiration->getTimestamp() > $current_time) {
++        $cache_max_age = $token_expiration->getTimestamp() - $current_time;
+       }
+       $embed_array = [
+         '#cache' => [
+@@ -176,19 +182,30 @@ class PowerBiEmbedFormatter extends FormatterBase {
+    *   The options that will be used to embed a powerbi report.
+    */
+   private function buildEmbedConfiguration(PowerBiEmbedField $item, array $report_configuration, string $langcode): array {
+-    $embed_pptions = $report_configuration;
+-    $embed_pptions['tokenType'] = $item->getValue()['token_type'];
+-    $embed_pptions['type'] = $item->getValue()['embed_type'];
+-    $embed_pptions['id'] = $item->getValue()['report_id'];
+-    $embed_pptions['settings']['layoutType'] = (int) $item->getValue()['report_layout'];
+-    $embed_pptions['settings']['localeSettings'] = $this->getPowerBiLangcode($langcode);
+-    $embed_pptions['tokenType'] = (int) ($embed_pptions['tokenType'] === 'Embed');
+-    foreach ($embed_pptions as $key => $embedOption) {
++    $embed_options = $report_configuration;
++    $embed_options['tokenType'] = $item->getValue()['token_type'];
++    $embed_options['type'] = $item->getValue()['embed_type'];
++    $embed_options['id'] = $item->getValue()['report_id'];
++    $embed_options['settings']['layoutType'] = (int) $item->getValue()['report_layout'];
++    $embed_options['settings']['localeSettings'] = $this->getPowerBiLangcode($langcode);
++    $embed_options['tokenType'] = (int) ($embed_options['tokenType'] === 'Embed');
++
++    // Pass workspaceId so the JS refresh call can address the right workspace.
++    $embed_options['workspaceId'] = $item->getValue()['workspace_id'];
++
++    foreach ($embed_options as $key => $embedOption) {
+       if (empty($embedOption)) {
+-        unset($embed_pptions[$key]);
++        unset($embed_options[$key]);
+       }
+     }
+-    return $embed_pptions;
++
++    // Set token refresh config after the empty() cleanup loop since empty(FALSE)
++    // and empty(0) are truthy and would strip these values if set beforehand.
++    $pwbi_settings = $this->configFactory->get('pwbi.settings');
++    $embed_options['token_refresh_enabled'] = (bool) ($pwbi_settings->get('token_refresh_enabled') ?? FALSE);
++    $embed_options['token_refresh_minutes'] = (int) ($pwbi_settings->get('token_refresh_minutes') ?? 10);
++
++    return $embed_options;
+   }
+ 
+ }
+diff --git a/src/PowerBiEmbed.php b/src/PowerBiEmbed.php
+index e49c1bb..7badb1b 100644
+--- a/src/PowerBiEmbed.php
++++ b/src/PowerBiEmbed.php
+@@ -89,6 +89,7 @@ class PowerBiEmbed implements ContainerInjectionInterface {
+       'embedUrl' => $reportInfo['embedUrl'],
+       'accessToken' => $embedToken['token'],
+       'tokenExpirationDate' => $embedToken['expiration'],
++      'datasetId' => $reportInfo['datasetId'],
+     ];
+   }
+ 
+diff --git a/src/Controller/PwbiTokenRefreshController.php b/src/Controller/PwbiTokenRefreshController.php
+new file mode 100644
+index 0000000..b0a5623
+--- /dev/null
 +++ b/src/Controller/PwbiTokenRefreshController.php
 @@ -0,0 +1,146 @@
 +<?php
@@ -363,104 +475,3 @@
 +  }
 +
 +}
---- a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
-+++ b/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
-@@ -5,6 +5,8 @@
- namespace Drupal\pwbi\Plugin\Field\FieldFormatter;
- 
- use Drupal\breakpoint\BreakpointManager;
-+use Drupal\Component\Datetime\TimeInterface;
-+use Drupal\Core\Config\ConfigFactoryInterface;
- use Drupal\Core\Datetime\DrupalDateTime;
- use Drupal\Core\Field\FieldDefinitionInterface;
- use Drupal\Core\Field\FieldItemListInterface;
-@@ -42,12 +44,14 @@
-     protected PowerBiEmbed $pwbiEmbed,
-     protected BreakpointManager $breakpointManager,
-     protected EventDispatcherInterface $dispatcher,
-+    protected TimeInterface $time,
-+    protected readonly ConfigFactoryInterface $configFactory,
-   ) {
-     parent::__construct($plugin_id, $plugin_definition, $field_definition, $settings, $label, $view_mode, $third_party_settings);
-   }
- 
-   /**
--   * {@inheritDoc}
-+   * {@inheritdoc}
-    */
-   public static function create(ContainerInterface $container, array $configuration, $plugin_id, $plugin_definition): static {
-     // @phpstan-ignore-next-line
-@@ -62,6 +66,8 @@
-       $container->get('pwbi_embed.embed'),
-       $container->get('breakpoint.manager'),
-       $container->get('event_dispatcher'),
-+      $container->get('datetime.time'),
-+      $container->get('config.factory'),
-     );
-   }
- 
-@@ -85,10 +91,10 @@
-       $report_width_units = $item->getValue()['report_width_units'];
-       $report_configuration = $this->pwbiEmbed->getEmbedDataFromApi($workspace, $report_id);
-       $token_expiration = new DrupalDateTime((string) $report_configuration['tokenExpirationDate']);
--      $current_time = new DrupalDateTime();
-+      $current_time = $this->time->getRequestTime();
-       $cache_max_age = 0;
--      if ($token_expiration->getTimestamp() > $current_time->getTimestamp()) {
--        $cache_max_age = $token_expiration->getTimestamp() - $current_time->getTimestamp();
-+      if ($token_expiration->getTimestamp() > $current_time) {
-+        $cache_max_age = $token_expiration->getTimestamp() - $current_time;
-       }
-       $embed_array = [
-         '#cache' => [
-@@ -176,19 +182,30 @@
-    *   The options that will be used to embed a powerbi report.
-    */
-   private function buildEmbedConfiguration(PowerBiEmbedField $item, array $report_configuration, string $langcode): array {
--    $embed_pptions = $report_configuration;
--    $embed_pptions['tokenType'] = $item->getValue()['token_type'];
--    $embed_pptions['type'] = $item->getValue()['embed_type'];
--    $embed_pptions['id'] = $item->getValue()['report_id'];
--    $embed_pptions['settings']['layoutType'] = (int) $item->getValue()['report_layout'];
--    $embed_pptions['settings']['localeSettings'] = $this->getPowerBiLangcode($langcode);
--    $embed_pptions['tokenType'] = (int) ($embed_pptions['tokenType'] === 'Embed');
--    foreach ($embed_pptions as $key => $embedOption) {
-+    $embed_options = $report_configuration;
-+    $embed_options['tokenType'] = $item->getValue()['token_type'];
-+    $embed_options['type'] = $item->getValue()['embed_type'];
-+    $embed_options['id'] = $item->getValue()['report_id'];
-+    $embed_options['settings']['layoutType'] = (int) $item->getValue()['report_layout'];
-+    $embed_options['settings']['localeSettings'] = $this->getPowerBiLangcode($langcode);
-+    $embed_options['tokenType'] = (int) ($embed_options['tokenType'] === 'Embed');
-+
-+    // Pass workspaceId so the JS refresh call can address the right workspace.
-+    $embed_options['workspaceId'] = $item->getValue()['workspace_id'];
-+
-+    foreach ($embed_options as $key => $embedOption) {
-       if (empty($embedOption)) {
--        unset($embed_pptions[$key]);
-+        unset($embed_options[$key]);
-       }
-     }
--    return $embed_pptions;
-+
-+    // Set token refresh config after the empty() cleanup loop since empty(FALSE)
-+    // and empty(0) are truthy and would strip these values if set beforehand.
-+    $pwbi_settings = $this->configFactory->get('pwbi.settings');
-+    $embed_options['token_refresh_enabled'] = (bool) ($pwbi_settings->get('token_refresh_enabled') ?? FALSE);
-+    $embed_options['token_refresh_minutes'] = (int) ($pwbi_settings->get('token_refresh_minutes') ?? 10);
-+
-+    return $embed_options;
-   }
- 
- }
---- a/src/PowerBiEmbed.php
-+++ b/src/PowerBiEmbed.php
-@@ -89,6 +89,7 @@
-       'embedUrl' => $reportInfo['embedUrl'],
-       'accessToken' => $embedToken['token'],
-       'tokenExpirationDate' => $embedToken['expiration'],
-+      'datasetId' => $reportInfo['datasetId'],
-     ];
-   }
- 
