@@ -68,6 +68,7 @@ class PowerBiEmbedPurgeFormatterTest extends PowerBiEmbedFormatterTest {
         ],
         'tags' => [
           'pwbi_embed',
+          'config:pwbi.settings',
         ],
         'max-age' => $expected_max_age,
       ],
@@ -111,6 +112,7 @@ class PowerBiEmbedPurgeFormatterTest extends PowerBiEmbedFormatterTest {
         ],
         'tags' => [
           'pwbi_embed',
+          'config:pwbi.settings',
         ],
         'max-age' => $expected_max_age,
       ],
