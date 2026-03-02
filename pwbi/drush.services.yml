@@ -8,5 +8,6 @@ services:
       - '@entity_field.manager'
       - '@state'
       - '@keyvalue'
+      - '@config.factory'
     tags:
       - { name: drush.command }

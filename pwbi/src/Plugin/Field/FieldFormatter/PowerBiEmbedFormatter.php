@@ -220,10 +220,11 @@ class PowerBiEmbedFormatter extends FormatterBase {
       }
     }
 
-    // Set token refresh config after the empty() cleanup loop since empty(FALSE)
+    // Set boolean/int config after the empty() cleanup loop since empty(FALSE)
     // and empty(0) are truthy and would strip these values if set beforehand.
     $embed_options['token_refresh_enabled'] = (bool) ($pwbi_settings->get('token_refresh_enabled') ?? FALSE);
     $embed_options['token_refresh_minutes'] = (int) ($pwbi_settings->get('token_refresh_minutes') ?? 10);
+    $embed_options['debug_enabled'] = (bool) ($pwbi_settings->get('debug_enabled') ?? FALSE);
 
     return $embed_options;
   }
