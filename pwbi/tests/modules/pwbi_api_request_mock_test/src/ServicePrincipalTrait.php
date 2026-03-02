@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace Drupal\pwbi_api_request_mock_test;
 
+use Drupal\oauth2_client\Entity\Oauth2Client;
+use League\OAuth2\Client\Token\AccessToken;
+
 /**
  * Provides methods to configure authentication and access token.
  */
@@ -116,6 +119,30 @@ trait ServicePrincipalTrait {
     $credentials_entity = $oauth_entity_storage->create($credentials_options);
     $credentials_entity->set('credential_storage_key', $credentials_entity->uuid());
     $credentials_entity->save();
+    $this->createAccessToken($credentials_entity, $credentials_options);
+  }
+
+  /**
+   * Create an access token for testing.
+   *
+   * @param \Drupal\oauth2_client\Entity\Oauth2Client $credentials_entity
+   *   The credentials' entity.
+   * @param array <mixed> $credentials_options
+   *   The configuration credentials.
+   */
+  protected function createAccessToken(Oauth2Client $credentials_entity, array $credentials_options): void {
+    $state = \Drupal::service('state');
+    $state->set($credentials_entity->uuid(), $credentials_options);
+    $token_options = [
+      'token_type' => "Bearer",
+      'expires_in' => 3599,
+      'ext_expires_in' => 3599,
+      'expires_on' => 3599,
+      'resource' => "https://analysis.windows.net/powerbi/api",
+      'access_token' => "access token",
+    ];
+    $token = new AccessToken($token_options);
+    $state->set("oauth2_client_access_token-" . $this->getServicePluginId(), $token);
   }
 
 }

@@ -7,7 +7,6 @@ namespace Drupal\pwbi\Oauth2Form;
 use Drupal\Core\DependencyInjection\ContainerInjectionInterface;
 use Drupal\Core\Form\FormStateInterface;
 use Drupal\Core\StringTranslation\StringTranslationTrait;
-use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\pwbi\Cert\CertificateManager;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 
@@ -19,7 +18,6 @@ class FormChanges implements ContainerInjectionInterface {
   use StringTranslationTrait;
 
   public function __construct(
-    protected readonly ConfigFactoryInterface $configFactory,
     protected readonly CertificateManager $certificate_manager,
   ) {}
 
@@ -28,7 +26,6 @@ class FormChanges implements ContainerInjectionInterface {
    */
   public static function create(ContainerInterface $container): static {
     return new static(
-      $container->get('config.factory'),
       $container->get('pwbi.cert_manager'),
     );
   }
@@ -45,7 +42,6 @@ class FormChanges implements ContainerInjectionInterface {
     $this->addTenant($form, $form_state);
     $this->addUseCertFile($form, $form_state);
     $this->addUploadCertFileCertFile($form, $form_state);
-    $this->lockCredentialInSettings($form, $form_state);
     $form['#validate'][] = ['Drupal\pwbi\Oauth2Form\StaticOperations', 'validateCertFile'];
     $form['#entity_builders'][] = ['Drupal\pwbi\Oauth2Form\StaticOperations', 'entityFormBuilder'];
   }
@@ -135,37 +131,6 @@ class FormChanges implements ContainerInjectionInterface {
       ],
       '#default_value' => $cert_file_fid ? [$cert_file_fid] : '',
     ];
-  }
-
-  /**
-   * Disable credential inputs when configured via settings.php.
-   *
-   * @param array $form
-   *   Form array.
-   * @param \Drupal\Core\Form\FormStateInterface $form_state
-   *   Form state.
-   */
-  private function lockCredentialInSettings(array &$form, FormStateInterface $form_state): void {
-    /** @var \Drupal\oauth2_client\Form\Oauth2ClientForm $oauth_form */
-    $oauth_form = $form_state->getFormObject();
-    /** @var \Drupal\oauth2_client\Entity\Oauth2Client $oauth_entity */
-    $oauth_entity = $oauth_form->getEntity();
-    $plugin_id = $oauth_entity->getOriginalId();
-    $plugin_configuration = $this->configFactory->get('oauth2_client.oauth2_client.' . $plugin_id);
-    $credentials = [
-      'tenant',
-      'client_id',
-      'client_secret',
-    ];
-    foreach ($credentials as $credential) {
-      if ($plugin_configuration->hasOverrides('third_party_settings.pwbi.' . $credential)) {
-        $notice = $this->t('%setting is disabled because it is overriden in the settings.php file or another module.', ['%setting' => $form['plugin_settings']['oauth2_client'][$credential]['#title']]);
-        $form['plugin_settings']['oauth2_client'][$credential]['#disabled'] = TRUE;
-        $form['plugin_settings']['oauth2_client'][$credential]['#description'] = $notice;
-        $form['plugin_settings']['oauth2_client'][$credential]['#required'] = FALSE;
-        $form['plugin_settings']['oauth2_client'][$credential]['#value'] = $plugin_configuration->get('third_party_settings.pwbi.' . $credential);
-      }
-    }
   }
 
 }

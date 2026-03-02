@@ -9,6 +9,3 @@ recipes/
 vendor/
 web/
 .vscode/
-.phpactor.json
-AGENTS.md
-phpcs.xml

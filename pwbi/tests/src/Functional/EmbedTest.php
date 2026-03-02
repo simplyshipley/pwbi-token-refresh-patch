@@ -40,7 +40,6 @@ class EmbedTest extends BrowserTestBase {
     'http_request_mock',
     'pwbi_api_request_mock_test',
     'pwbi_embed_test',
-    'update_test',
   ];
 
   /**
@@ -80,10 +79,8 @@ class EmbedTest extends BrowserTestBase {
    * Test loading of powerbi client js library and embed options.
    */
   public function testEmbedReport(): void {
-    // Fix the time to have consistency across the test and the site under test.
-    \Drupal::state()->set('update_test.mock_date', '2026-01-28');
     $max_age = 100;
-    $request_time = \Drupal::time()->getRequestTime() + $max_age;
+    $request_time = \Drupal::time()->getCurrentTime() + $max_age;
     \Drupal::state()->set('api_powerbi_com_token_expire', $request_time);
     $this->drupalGet('media/' . $this->pwbiMedia->id());
     /** @var \Drupal\Tests\DocumentElement $page */

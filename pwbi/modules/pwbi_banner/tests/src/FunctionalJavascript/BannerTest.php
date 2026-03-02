@@ -213,7 +213,7 @@ class BannerTest extends WebDriverTestBase {
       ->set('display_options', $display_option)
       ->set('banner_text', $text)
       ->save();
-    \Drupal::service('cache.render')->deleteAll();
+    \Drupal::service('cache.render')->invalidateAll();
   }
 
   /**

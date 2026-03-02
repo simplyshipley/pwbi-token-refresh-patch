@@ -85,7 +85,11 @@ class PwbiTokenRefreshController extends ControllerBase {
     try {
       $result = Json::decode($this->pwbiClient->getEmbedToken($body));
     }
-    catch (\Exception $e) {
+    catch (\Throwable $e) {
+      $this->loggerFactory->get('pwbi')->error(
+        'Embed token generation threw an exception for report @report: @message',
+        ['@report' => $report_id, '@message' => $e->getMessage()]
+      );
       return new JsonResponse(['error' => 'Token generation failed'], 502, [
         'Cache-Control' => 'no-store',
       ]);
@@ -112,7 +116,7 @@ class PwbiTokenRefreshController extends ControllerBase {
 
     return new JsonResponse([
       'token'      => $result['token'],
-      'expiration' => $result['expiration'],
+      'expiration' => $result['expiration'] ?? null,
     ], 200, [
       'Cache-Control' => 'no-store',
     ]);

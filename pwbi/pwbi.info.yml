@@ -8,3 +8,8 @@ dependencies:
   - oauth2_client:oauth2_client
   - drupal:media
   - drupal:breakpoint
+
+# Information added by Drupal.org packaging script on 2025-03-31
+version: '2.0.3'
+project: 'pwbi'
+datestamp: 1743405357
