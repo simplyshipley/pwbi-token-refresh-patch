@@ -13,8 +13,17 @@ A government website (USPS OIG) runs a Drupal site using the `pwbi` module (v2.x
 - `pwbi/README.md` updated with documentation for both new features (GCC endpoint config, automatic token refresh)
 - Architecture fully designed and reviewed by multi-agent review (decisions locked, see below)
 - **All 9 files from the spec implemented** (see "Complete Specification" below for details)
-- **Drush commands added** — `pwbi:auth-check` and `pwbi:token-refresh` (Files 10–11)
+- **Drush commands added** — `pwbi:auth-check`, `pwbi:flush-token`, `pwbi:list-reports`, `pwbi:token-refresh` (Files 10–11)
 - Both DDEV installation and patch repo are in sync
+- **Code review applied** (Drupal architect + PHP quality review, session 2):
+  - `PwbiServicePrincipal.php`: Multi-cloud OAuth2 endpoint map — authorization, token, resource_owner, and scope URLs all auto-swap from `pwbi_api_endpoint` config. Memoized per-request via `$resolvedCloudOauthConfig`.
+  - `PowerBiEmbed.php`: `PWBI_REPORT_META` moved from State blob (read-modify-write) to per-key `KeyValueStore` entries. NULL guards added to all three `Json::decode()` calls.
+  - `PowerBiEmbedFormatter.php`: `config:pwbi.settings` cache tag added; config read moved outside foreach loop; render cache max-age reduced by refresh buffer when refresh enabled; `ImmutableConfig` passed to `buildEmbedConfiguration()`.
+  - `PowerBiEmbedConfigForm.php`: `StateInterface` injected (replaces `\Drupal::state()` static call); endpoint-change detection auto-clears cached OAuth2 token on save.
+  - `PwbiTokenRefreshController.php`: UUID validation for `workspace_id`, `report_id`, and `dataset_id`; `Request` object injected (replaces `\Drupal::request()` static call); Drupal watchdog logging on successful token issue.
+  - `pwbi-embed.js`: `_refreshing` guard (try/finally) prevents concurrent token refresh calls; diagnostic `console.log` in `checkTokenAndUpdate()` shows token expiry and minutes remaining every 30 seconds.
+  - `pwbi.services.yml` + `drush.services.yml`: `@keyvalue` added to both service definitions.
+  - JWT padding bug fixed in `PwbiCommands::authCheck()` (URL-safe base64 + pad before decode).
 
 **JS implementation note:**
 The `pwbi-embed.js` implementation (File 9) was refined during implementation to align exactly with Microsoft's
@@ -26,6 +35,7 @@ the live files (`pwbi/components/pwbi-embed/pwbi-embed.js`) are authoritative.
 **Pending:**
 - Apply patch to production deployment (pending OIG change management process)
 - Submit upstream to drupal.org/project/pwbi if appropriate
+- Consider reducing default `token_refresh_minutes` documentation guidance from 10 to whatever OIG settles on after testing
 
 ---
 
