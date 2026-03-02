@@ -1,8 +1,8 @@
 diff --git a/components/pwbi-embed/pwbi-embed.js b/components/pwbi-embed/pwbi-embed.js
-index fd784bc..f5580bc 100644
+index fd784bc..de0ba8f 100644
 --- a/components/pwbi-embed/pwbi-embed.js
 +++ b/components/pwbi-embed/pwbi-embed.js
-@@ -1,21 +1,88 @@
+@@ -1,21 +1,89 @@
  ((Drupal) => {
 +  // Minutes before token expiration to trigger a refresh.
 +  const MINUTES_BEFORE_EXPIRATION = 10;
@@ -25,7 +25,8 @@ index fd784bc..f5580bc 100644
 +    const currentTime = Date.now();
 +    const expiration = Date.parse(embedSettings.tokenExpiration);
 +    const timeUntilExpiration = expiration - currentTime;
-+    const timeToUpdate = MINUTES_BEFORE_EXPIRATION * 60 * 1000;
++    const minutesBefore = embedSettings.token_refresh_minutes ?? MINUTES_BEFORE_EXPIRATION;
++    const timeToUpdate = minutesBefore * 60 * 1000;
 +
 +    if (timeUntilExpiration <= timeToUpdate) {
 +      console.log('[pwbi] Token expiring soon, refreshing...');
@@ -104,7 +105,7 @@ index fd784bc..f5580bc 100644
            return;
          }
  
-@@ -23,6 +90,7 @@
+@@ -23,6 +91,7 @@
          if (embedConfiguration.settings === undefined) {
            embedConfiguration.settings = {};
          }
@@ -112,7 +113,7 @@ index fd784bc..f5580bc 100644
          // Get a reference to the HTML element that contains the embedded report.
          const powerBiEmbedParams = {
            embedConfiguration,
-@@ -33,37 +101,59 @@
+@@ -33,37 +102,59 @@
            detail: powerBiEmbedParams,
          });
          window.dispatchEvent(PowerBiPreEmbed);
@@ -182,7 +183,7 @@ index fd784bc..f5580bc 100644
          }
        });
        document.dispatchEvent(blockEmbedEvent);
-@@ -75,7 +165,7 @@
+@@ -75,7 +166,7 @@
        if (!settings.pwbi_flag) {
          const waitForGlobal = function (key, settings) {
            if (window[key]) {
@@ -191,7 +192,7 @@ index fd784bc..f5580bc 100644
            } else {
              setTimeout(function () {
                waitForGlobal(key, settings);
-@@ -83,7 +173,7 @@
+@@ -83,7 +174,7 @@
            }
          };
          settings.pwbi_flag = true;
@@ -238,11 +239,23 @@ index 6397c5b..f8ad781 100644
  media.source.pwbi_embed_visual:
    type: media.source.field_aware
    label: '"PWBI Embed" media source configuration'
+diff --git a/pwbi.permissions.yml b/pwbi.permissions.yml
+index 5cf033e..0c288cd 100644
+--- a/pwbi.permissions.yml
++++ b/pwbi.permissions.yml
+@@ -1,3 +1,7 @@
+ configure pwbi:
+   title: 'Administer PowerBi configuration'
+   restrict access: true
++
++view pwbi embed token:
++  title: 'Request Power BI embed tokens'
++  description: 'Allows the token refresh endpoint to issue embed tokens. Grant to roles that can view embedded Power BI reports.'
 diff --git a/pwbi.routing.yml b/pwbi.routing.yml
-index 020547c..fb587a0 100644
+index 020547c..adc6d5e 100644
 --- a/pwbi.routing.yml
 +++ b/pwbi.routing.yml
-@@ -21,3 +21,13 @@ pwbi.embed_settings:
+@@ -21,3 +21,15 @@ pwbi.embed_settings:
      _title: 'PowerBi Embed Settings'
    requirements:
      _permission: 'configure pwbi'
@@ -253,9 +266,11 @@ index 020547c..fb587a0 100644
 +    _controller: '\Drupal\pwbi\Controller\PwbiTokenRefreshController::refresh'
 +    _title: 'Power BI token refresh'
 +  requirements:
-+    _permission: 'access content'
++    _permission: 'view pwbi embed token'
 +    workspace_id: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
 +    report_id: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
++  options:
++    no_cache: TRUE
 diff --git a/pwbi.services.yml b/pwbi.services.yml
 index 2bd86b4..27e0fcf 100644
 --- a/pwbi.services.yml
@@ -672,14 +687,14 @@ index 0876f69..2856a64 100644
  
  }
 diff --git a/src/PowerBiEmbed.php b/src/PowerBiEmbed.php
-index e49c1bb..7badb1b 100644
+index e49c1bb..3cc6468 100644
 --- a/src/PowerBiEmbed.php
 +++ b/src/PowerBiEmbed.php
 @@ -89,6 +89,7 @@ class PowerBiEmbed implements ContainerInjectionInterface {
        'embedUrl' => $reportInfo['embedUrl'],
        'accessToken' => $embedToken['token'],
        'tokenExpirationDate' => $embedToken['expiration'],
-+      'datasetId' => $reportInfo['datasetId'],
++      'datasetId' => $reportInfo['datasetId'] ?? NULL,
      ];
    }
  
@@ -1009,10 +1024,10 @@ index 0000000..5c239ac
 +}
 diff --git a/src/Controller/PwbiTokenRefreshController.php b/src/Controller/PwbiTokenRefreshController.php
 new file mode 100644
-index 0000000..b0a5623
+index 0000000..ee9f46c
 --- /dev/null
 +++ b/src/Controller/PwbiTokenRefreshController.php
-@@ -0,0 +1,146 @@
+@@ -0,0 +1,144 @@
 +<?php
 +
 +declare(strict_types=1);
@@ -1025,7 +1040,7 @@ index 0000000..b0a5623
 +use Drupal\pwbi\PowerBiEmbed;
 +use Symfony\Component\DependencyInjection\ContainerInterface;
 +use Symfony\Component\HttpFoundation\JsonResponse;
-+use Symfony\Component\HttpFoundation\RequestStack;
++use Symfony\Component\HttpFoundation\Request;
 +
 +/**
 + * Returns a fresh embed token for an active Power BI report embed.
@@ -1037,7 +1052,6 @@ index 0000000..b0a5623
 +  public function __construct(
 +    protected readonly PowerBiClient $pwbiClient,
 +    protected readonly PowerBiEmbed $pwbiEmbed,
-+    protected readonly RequestStack $requestStack,
 +  ) {}
 +
 +  /**
@@ -1048,7 +1062,6 @@ index 0000000..b0a5623
 +    return new static(
 +      $container->get('pwbi_api.client'),
 +      $container->get('pwbi_embed.embed'),
-+      $container->get('request_stack'),
 +    );
 +  }
 +
@@ -1066,7 +1079,7 @@ index 0000000..b0a5623
 +   * @return \Symfony\Component\HttpFoundation\JsonResponse
 +   *   JSON with `token`, or an error with HTTP 400/403/502.
 +   */
-+  public function refresh(string $workspace_id, string $report_id): JsonResponse {
++  public function refresh(Request $request, string $workspace_id, string $report_id): JsonResponse {
 +    // Allowlist check: confirm this workspace+report is an active embed.
 +    if (!$this->isAllowedEmbed($workspace_id, $report_id)) {
 +      return new JsonResponse(['error' => 'Forbidden'], 403, [
@@ -1077,7 +1090,7 @@ index 0000000..b0a5623
 +    // NOTE: datasetId is passed via drupalSettings on initial page load.
 +    // The client must include it as a query parameter: ?dataset_id=...
 +    // This avoids calling getEmbedDataFromApi() (3x API cost).
-+    $dataset_id = (string) $this->requestStack->getCurrentRequest()?->query->get('dataset_id', '');
++    $dataset_id = (string) $request->query->get('dataset_id', '');
 +    if (empty($dataset_id)) {
 +      return new JsonResponse(['error' => 'dataset_id query parameter required'], 400, [
 +        'Cache-Control' => 'no-store',

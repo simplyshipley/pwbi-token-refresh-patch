@@ -10,7 +10,7 @@ use Drupal\pwbi\Api\PowerBiClient;
 use Drupal\pwbi\PowerBiEmbed;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
-use Symfony\Component\HttpFoundation\RequestStack;
+use Symfony\Component\HttpFoundation\Request;
 
 /**
  * Returns a fresh embed token for an active Power BI report embed.
@@ -22,7 +22,6 @@ class PwbiTokenRefreshController extends ControllerBase {
   public function __construct(
     protected readonly PowerBiClient $pwbiClient,
     protected readonly PowerBiEmbed $pwbiEmbed,
-    protected readonly RequestStack $requestStack,
   ) {}
 
   /**
@@ -33,7 +32,6 @@ class PwbiTokenRefreshController extends ControllerBase {
     return new static(
       $container->get('pwbi_api.client'),
       $container->get('pwbi_embed.embed'),
-      $container->get('request_stack'),
     );
   }
 
@@ -51,7 +49,7 @@ class PwbiTokenRefreshController extends ControllerBase {
    * @return \Symfony\Component\HttpFoundation\JsonResponse
    *   JSON with `token`, or an error with HTTP 400/403/502.
    */
-  public function refresh(string $workspace_id, string $report_id): JsonResponse {
+  public function refresh(Request $request, string $workspace_id, string $report_id): JsonResponse {
     // Allowlist check: confirm this workspace+report is an active embed.
     if (!$this->isAllowedEmbed($workspace_id, $report_id)) {
       return new JsonResponse(['error' => 'Forbidden'], 403, [
@@ -62,7 +60,7 @@ class PwbiTokenRefreshController extends ControllerBase {
     // NOTE: datasetId is passed via drupalSettings on initial page load.
     // The client must include it as a query parameter: ?dataset_id=...
     // This avoids calling getEmbedDataFromApi() (3x API cost).
-    $dataset_id = (string) $this->requestStack->getCurrentRequest()?->query->get('dataset_id', '');
+    $dataset_id = (string) $request->query->get('dataset_id', '');
     if (empty($dataset_id)) {
       return new JsonResponse(['error' => 'dataset_id query parameter required'], 400, [
         'Cache-Control' => 'no-store',
