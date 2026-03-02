@@ -4,15 +4,12 @@ declare(strict_types=1);
 
 namespace Drupal\pwbi\Plugin\Oauth2Client;
 
-use Drupal\Core\Logger\LoggerChannelFactoryInterface;
 use Drupal\Core\Utility\Error;
 use Drupal\oauth2_client\Plugin\Oauth2Client\Oauth2ClientPluginBase;
 use Drupal\oauth2_client\Plugin\Oauth2Client\StateTokenStorage;
-use GuzzleHttp\ClientInterface;
 use League\OAuth2\Client\Provider\AbstractProvider;
 use League\OAuth2\Client\Provider\GenericProvider;
 use Psr\Log\LogLevel;
-use Symfony\Component\DependencyInjection\ContainerInterface;
 use TheNetworg\OAuth2\Client\Provider\Azure;
 
 /**
@@ -25,33 +22,13 @@ use TheNetworg\OAuth2\Client\Provider\Azure;
  *   label = @Translation("Power Bi service principal"),
  *   authorization_uri = "https://login.microsoftonline.com/%s/oauth2/v2.0/authorize/",
  *   token_uri = "https://login.windows.net/%s/oauth2/v2.0/token/",
- *   resource_owner_uri = "https://analysis.windows.net/powerbi/api",
- *   source = "https://analysis.windows.net/powerbi/api/.default",
+ *   resource_owner_uri = "https://analysis.usgovcloudapi.net/powerbi/api",
+ *   source = "https://analysis.usgovcloudapi.net/powerbi/api/.default",
  * )
  */
 class PwbiServicePrincipal extends Oauth2ClientPluginBase {
 
   use StateTokenStorage;
-
-  /**
-   * The injected logger factory.
-   *
-   * @var \Drupal\Core\Logger\LoggerChannelFactoryInterface
-   */
-  protected LoggerChannelFactoryInterface $loggerFactory;
-
-  /**
-   * {@inheritdoc}
-   */
-  public static function create(ContainerInterface $container, array $configuration, $plugin_id, $plugin_definition) {
-    $plugin = parent::create($container, $configuration, $plugin_id, $plugin_definition);
-    // @phpstan-ignore-next-line
-    $plugin->loggerFactory = $container->get('logger.factory');
-    // @phpstan-ignore-next-line
-    $plugin->collaborators['httpClient'] = $container->get(ClientInterface::class);
-
-    return $plugin;
-  }
 
   /**
    * Retrieves the scope for authentication.
@@ -76,7 +53,11 @@ class PwbiServicePrincipal extends Oauth2ClientPluginBase {
       return $pwbi_provider->getTenant($this->pluginId);
     }
     catch (\Exception $e) {
-      Error::logException($this->loggerFactory->get('pwbi'), $e, "Error getting service tenant: " . $e->getMessage(), [], LogLevel::CRITICAL);
+      // Parent class Oauth2GrantTypePluginBase _construct is final and we can't
+      // inject the logger service.
+      // @phpstan-ignore-next-line
+      $logger = \Drupal::logger('pwbi');
+      Error::logException($logger, $e, "Error getting service tenant: " . $e->getMessage(), [], LogLevel::CRITICAL);
     }
     return '';
   }
@@ -94,7 +75,11 @@ class PwbiServicePrincipal extends Oauth2ClientPluginBase {
       return $pwbi_provider->getCertificateFilePath($this->pluginId);
     }
     catch (\Exception $e) {
-      Error::logException($this->loggerFactory->get('pwbi'), $e, "Error getting service certificate path: " . $e->getMessage(), [], LogLevel::CRITICAL);
+      // Parent class Oauth2GrantTypePluginBase _construct is final and we can't
+      // inject the logger service.
+      // @phpstan-ignore-next-line
+      $logger = \Drupal::logger('pwbi');
+      Error::logException($logger, $e, "Error getting service certificate path: " . $e->getMessage(), [], LogLevel::CRITICAL);
     }
     return '';
   }
@@ -112,7 +97,11 @@ class PwbiServicePrincipal extends Oauth2ClientPluginBase {
       return $pwbi_provider->useCertificate($this->pluginId);
     }
     catch (\Exception $e) {
-      Error::logException($this->loggerFactory->get('pwbi'), $e, "Error getting service certificate: " . $e->getMessage(), [], LogLevel::CRITICAL);
+      // Parent class Oauth2GrantTypePluginBase _construct is final and we can't
+      // inject the logger service.
+      // @phpstan-ignore-next-line
+      $logger = \Drupal::logger('pwbi');
+      Error::logException($logger, $e, "Error getting service certicate: " . $e->getMessage(), [], LogLevel::CRITICAL);
     }
     return FALSE;
   }
