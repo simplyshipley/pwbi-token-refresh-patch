@@ -11,7 +11,7 @@ services:
 
   pwbi_embed.embed:
     class: '\Drupal\pwbi\PowerBiEmbed'
-    arguments: ['@state' ,'@logger.factory', '@pwbi_api.client']
+    arguments: ['@state', '@logger.factory', '@pwbi_api.client', '@keyvalue']
 
   pwbi.cert_manager:
     class: '\Drupal\pwbi\Cert\CertificateManager'

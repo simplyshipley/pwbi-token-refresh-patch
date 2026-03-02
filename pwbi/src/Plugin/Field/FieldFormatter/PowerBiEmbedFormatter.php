@@ -7,6 +7,7 @@ namespace Drupal\pwbi\Plugin\Field\FieldFormatter;
 use Drupal\breakpoint\BreakpointManager;
 use Drupal\Component\Datetime\TimeInterface;
 use Drupal\Core\Config\ConfigFactoryInterface;
+use Drupal\Core\Config\ImmutableConfig;
 use Drupal\Core\Datetime\DrupalDateTime;
 use Drupal\Core\Field\FieldDefinitionInterface;
 use Drupal\Core\Field\FieldItemListInterface;
@@ -82,6 +83,12 @@ class PowerBiEmbedFormatter extends FormatterBase {
     $this->dispatcher->dispatch($overlays_event, PwbiEmbedOverlaysEvent::PWBI_OVERLAYS);
     $overlay_top = $overlays_event->overlay_top ?? [];
     $overlay_blocking = $overlays_event->overlay_blocking ?? [];
+
+    // Load once outside the loop — config factory is cached internally but
+    // loading here makes the single-read intent explicit and avoids redundant
+    // calls to buildEmbedConfiguration() for multi-report pages.
+    $pwbi_settings = $this->configFactory->get('pwbi.settings');
+
     foreach ($items as $item) {
       $report_id = $item->getValue()['report_id'];
       $workspace = $item->getValue()['workspace_id'];
@@ -98,7 +105,6 @@ class PowerBiEmbedFormatter extends FormatterBase {
         // When JS auto-refresh is enabled, expire the render cache before the
         // refresh window so any new page load always gets a token with enough
         // life remaining for the JS timer to schedule properly.
-        $pwbi_settings = $this->configFactory->get('pwbi.settings');
         if ($pwbi_settings->get('token_refresh_enabled')) {
           $refresh_buffer = (int) ($pwbi_settings->get('token_refresh_minutes') ?? 10) * 60;
           $cache_max_age = max(0, $cache_max_age - $refresh_buffer);
@@ -107,7 +113,9 @@ class PowerBiEmbedFormatter extends FormatterBase {
       $embed_array = [
         '#cache' => [
           'max-age' => $cache_max_age,
-          'tags' => ['pwbi_embed'],
+          // Include config:pwbi.settings so changing the token refresh settings
+          // in the admin form immediately invalidates cached render elements.
+          'tags' => ['pwbi_embed', ...$pwbi_settings->getCacheTags()],
         ],
         '#type' => 'component',
         '#component' => 'pwbi:pwbi-embed',
@@ -122,7 +130,7 @@ class PowerBiEmbedFormatter extends FormatterBase {
         '#attached' => [
           'drupalSettings' => [
             'pwbi_embed' => [
-              $report_id => $this->buildEmbedConfiguration($item, $report_configuration, $langcode),
+              $report_id => $this->buildEmbedConfiguration($item, $report_configuration, $langcode, $pwbi_settings),
             ],
             'language' => $langcode,
           ],
@@ -189,7 +197,7 @@ class PowerBiEmbedFormatter extends FormatterBase {
    * @return array <mixed>
    *   The options that will be used to embed a powerbi report.
    */
-  private function buildEmbedConfiguration(PowerBiEmbedField $item, array $report_configuration, string $langcode): array {
+  private function buildEmbedConfiguration(PowerBiEmbedField $item, array $report_configuration, string $langcode, ImmutableConfig $pwbi_settings): array {
     $embed_options = $report_configuration;
     $embed_options['tokenType'] = $item->getValue()['token_type'];
     $embed_options['type'] = $item->getValue()['embed_type'];
@@ -209,7 +217,6 @@ class PowerBiEmbedFormatter extends FormatterBase {
 
     // Set token refresh config after the empty() cleanup loop since empty(FALSE)
     // and empty(0) are truthy and would strip these values if set beforehand.
-    $pwbi_settings = $this->configFactory->get('pwbi.settings');
     $embed_options['token_refresh_enabled'] = (bool) ($pwbi_settings->get('token_refresh_enabled') ?? FALSE);
     $embed_options['token_refresh_minutes'] = (int) ($pwbi_settings->get('token_refresh_minutes') ?? 10);
 
