@@ -1,82 +1,52 @@
 ((Drupal) => {
+  // Minutes before token expiration to trigger a refresh.
+  const MINUTES_BEFORE_EXPIRATION = 10;
+
+  // How often (ms) to poll and check whether a refresh is needed.
+  // 30 seconds matches the Microsoft-recommended interval.
+  const INTERVAL_TIME = 30000;
+
   /**
-   * Schedule a token refresh before the current embed token expires.
+   * Check whether the token is within the refresh window and update if so.
    *
-   * Reads the JWT exp claim to calculate when to fire. Adds random jitter to
-   * prevent a thundering herd when many users load the same cached page.
-   * Also registers a visibilitychange listener so a token that expired while
-   * the tab was backgrounded is refreshed immediately on return.
+   * Called on a 30-second interval and also immediately when the tab becomes
+   * visible again after being backgrounded. Mirrors the pattern in Microsoft's
+   * token refresh documentation.
    *
-   * @param {HTMLElement} embedContainer - The container element for the embed.
-   * @param {object} embedSettings - The drupalSettings entry for this report.
-   * @param {object} powerbiClient - The global powerbi client object.
+   * @param {object} embedSettings - drupalSettings entry for this report.
+   * @param {object} report - The Report object returned by powerbiClient.load().
    */
-  function scheduleTokenRefresh(embedContainer, embedSettings, powerbiClient) {
-    const arrayToken = embedSettings.accessToken.split('.');
-    if (arrayToken.length < 2) {
-      return;
+  function checkTokenAndUpdate(embedSettings, report) {
+    const currentTime = Date.now();
+    const expiration = Date.parse(embedSettings.tokenExpiration);
+    const timeUntilExpiration = expiration - currentTime;
+    const timeToUpdate = MINUTES_BEFORE_EXPIRATION * 60 * 1000;
+
+    if (timeUntilExpiration <= timeToUpdate) {
+      console.log('[pwbi] Token expiring soon, refreshing...');
+      updateToken(embedSettings, report);
     }
-    const tokenPayload = JSON.parse(atob(arrayToken[1]));
-    if (tokenPayload?.exp === undefined) {
-      return;
-    }
-    const expMs = tokenPayload.exp * 1000;
-    const refreshMinutes = embedSettings.token_refresh_minutes ?? 10;
-    const refreshMs = refreshMinutes * 60 * 1000;
-    // Add up to 30 seconds jitter to prevent thundering herd.
-    const jitter = Math.random() * 30000;
-    const delay = expMs - Date.now() - refreshMs + jitter;
-
-    if (delay <= 0) {
-      // Token already close to expiry or past; refresh immediately.
-      performTokenRefresh(embedContainer, embedSettings, powerbiClient);
-      return;
-    }
-
-    // Both the timer and the visibility listener are set up together so each
-    // can cancel the other, preventing duplicate refreshes and listener leaks.
-    let visibilityHandler;
-
-    const timerId = setTimeout(() => {
-      document.removeEventListener('visibilitychange', visibilityHandler);
-      performTokenRefresh(embedContainer, embedSettings, powerbiClient);
-    }, delay);
-
-    // Also refresh when tab becomes visible (catches expiry during inactivity).
-    visibilityHandler = function onVisible() {
-      if (document.visibilityState === 'visible') {
-        const nowMs = Date.now();
-        if (nowMs >= expMs - refreshMs) {
-          clearTimeout(timerId);
-          document.removeEventListener('visibilitychange', visibilityHandler);
-          performTokenRefresh(embedContainer, embedSettings, powerbiClient);
-        }
-      }
-    };
-    document.addEventListener('visibilitychange', visibilityHandler);
   }
 
   /**
    * Fetch a fresh embed token from Drupal and apply it to the live report.
    *
-   * Uses `powerbi.get(embedContainer)` (Microsoft's recommended pattern) to
-   * obtain the live report reference. After applying the new token the refresh
-   * cycle is rescheduled so the embed stays alive indefinitely.
+   * Passes the report object directly (captured from powerbiClient.load()) so
+   * there is no fragile DOM re-lookup via powerbi.get(). After a successful
+   * refresh, embedSettings.tokenExpiration is updated so subsequent
+   * checkTokenAndUpdate() calls use the new expiry window.
    *
-   * @param {HTMLElement} embedContainer
-   * @param {object} embedSettings
-   * @param {object} powerbiClient
+   * @param {object} embedSettings - drupalSettings entry for this report.
+   * @param {object} report - The Report object returned by powerbiClient.load().
    */
-  async function performTokenRefresh(embedContainer, embedSettings, powerbiClient) {
+  async function updateToken(embedSettings, report) {
     const { workspaceId, id: reportId, datasetId } = embedSettings;
+    const base = drupalSettings.path.baseUrl;
+    const refreshUrl = `${base}pwbi/token-refresh/${workspaceId}/${reportId}?dataset_id=${encodeURIComponent(datasetId)}`;
+
     try {
-      const base = drupalSettings.path.baseUrl;
-      const refreshUrl = `${base}pwbi/token-refresh/${workspaceId}/${reportId}?dataset_id=${encodeURIComponent(datasetId)}`;
       const response = await fetch(refreshUrl, {
-        method: 'GET',
-        headers: {
-          'Accept': 'application/json',
-        },
+        headers: { 'Accept': 'application/json' },
       });
 
       if (!response.ok) {
@@ -90,13 +60,13 @@
         return;
       }
 
-      // Use powerbi.get() to retrieve the live report reference.
-      const liveReport = powerbiClient.get(embedContainer);
-      await liveReport.setAccessToken(data.token);
+      // Update the tracked expiration so future interval checks use the new window.
+      embedSettings.tokenExpiration = data.expiration;
 
-      // Update local embedSettings and reschedule for the next cycle.
-      embedSettings.accessToken = data.token;
-      scheduleTokenRefresh(embedContainer, embedSettings, powerbiClient);
+      // Apply the new token directly to the report reference we already hold.
+      await report.setAccessToken(data.token);
+
+      console.log('[pwbi] Token refreshed. New expiration:', data.expiration);
     }
     catch (err) {
       console.error('[pwbi] Token refresh failed', err);
@@ -115,19 +85,12 @@
         if (alreadyEmbedded) {
           return;
         }
-        const arrayToken = embedSettings.accessToken.split('.');
-        if (arrayToken.length < 2) {
-          return;
-        }
-        const tokenPayload = JSON.parse(atob(arrayToken[1]));
-        if (tokenPayload?.exp === undefined) {
-          return;
-        }
 
         const embedConfiguration = embedSettings;
         if (embedConfiguration.settings === undefined) {
           embedConfiguration.settings = {};
         }
+
         // Get a reference to the HTML element that contains the embedded report.
         const powerBiEmbedParams = {
           embedConfiguration,
@@ -142,7 +105,6 @@
           powerBiEmbedParams.embedContainer,
           powerBiEmbedParams.embedConfiguration,
         );
-        // Embed the visual.
         const PowerBiPostEmbed = new CustomEvent('PowerBiPostEmbed', {
           detail: report,
         });
@@ -151,9 +113,28 @@
         });
         report.on('rendered', () => {
           window.dispatchEvent(PowerBiPostEmbed);
-          // Start token refresh timer if enabled.
-          if (embedSettings.token_refresh_enabled) {
-            scheduleTokenRefresh(embedContainer, embedSettings, powerbiClient);
+          // Start the token refresh polling on first render only. The `rendered`
+          // event fires on every re-render (filters, drill-through, page turns)
+          // so the _refreshScheduled guard prevents duplicate intervals stacking.
+          if (embedSettings.token_refresh_enabled && !embedSettings._refreshScheduled) {
+            embedSettings._refreshScheduled = true;
+
+            // Seed tokenExpiration from the server-rendered value so the first
+            // interval check has a baseline before any refresh has occurred.
+            embedSettings.tokenExpiration = embedSettings.tokenExpirationDate;
+
+            // Poll every 30 seconds — matches Microsoft's recommended pattern.
+            setInterval(() => {
+              checkTokenAndUpdate(embedSettings, report);
+            }, INTERVAL_TIME);
+
+            // Also check immediately when the tab becomes visible again so a
+            // token that expired while the tab was backgrounded is caught fast.
+            document.addEventListener('visibilitychange', () => {
+              if (!document.hidden) {
+                checkTokenAndUpdate(embedSettings, report);
+              }
+            });
           }
         });
       });
