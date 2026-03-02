@@ -99,7 +99,8 @@ class PwbiTokenRefreshController extends ControllerBase {
     }
 
     return new JsonResponse([
-      'token' => $result['token'],
+      'token'      => $result['token'],
+      'expiration' => $result['expiration'],
     ], 200, [
       'Cache-Control' => 'no-store',
     ]);
