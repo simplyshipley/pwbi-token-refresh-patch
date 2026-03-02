@@ -304,7 +304,7 @@ index 2bd86b4..27e0fcf 100644
 \ No newline at end of file
 +      - { name: event_subscriber }
 diff --git a/src/Api/PowerBiClient.php b/src/Api/PowerBiClient.php
-index 34987a1..6a4afa2 100644
+index 34987a1..72f2523 100644
 --- a/src/Api/PowerBiClient.php
 +++ b/src/Api/PowerBiClient.php
 @@ -5,6 +5,7 @@ declare(strict_types=1);
@@ -367,7 +367,31 @@ index 34987a1..6a4afa2 100644
    /**
     * Run request to PowerBi endpoint.
     *
-@@ -120,7 +133,7 @@ class PowerBiClient implements ContainerInjectionInterface {
+@@ -103,6 +116,23 @@ class PowerBiClient implements ContainerInjectionInterface {
+       $this->loggerFactory->get('pwbi_api')->error('Failed to complete task "@error"', [
+         '@error' => $e->getMessage(),
+       ]);
++      // Return the response body when available so callers can JSON-decode the
++      // Power BI error object ({"error":{"code":"...","message":"..."}}).
++      // Fall back to the Guzzle summary (which includes HTTP status + URL) when
++      // the body is empty — an empty 403 body typically means the tenant-level
++      // "Allow service principals to use Power BI APIs" setting is disabled.
++      if ($e->hasResponse()) {
++        $body = (string) $e->getResponse()->getBody();
++        if ($body !== '') {
++          return $body;
++        }
++        // Empty body — encode HTTP status so callers can surface it.
++        return json_encode([
++          'httpError' => $e->getResponse()->getStatusCode(),
++          'httpReason' => $e->getResponse()->getReasonPhrase(),
++          'message' => $e->getMessage(),
++        ]);
++      }
+       return $e->getMessage();
+     }
+     return $response->getBody()->getContents();
+@@ -120,7 +150,7 @@ class PowerBiClient implements ContainerInjectionInterface {
     * @throws \Exception
     */
    public function getEmbedToken(array $body): string {
@@ -376,7 +400,7 @@ index 34987a1..6a4afa2 100644
    }
  
    /**
-@@ -137,7 +150,7 @@ class PowerBiClient implements ContainerInjectionInterface {
+@@ -137,7 +167,7 @@ class PowerBiClient implements ContainerInjectionInterface {
     * @throws \Exception
     */
    public function executeQuery(string $datasetId, array $body): string {
@@ -385,7 +409,7 @@ index 34987a1..6a4afa2 100644
      return $this->connect('post', $endpoint, $body);
    }
  
-@@ -157,7 +170,7 @@ class PowerBiClient implements ContainerInjectionInterface {
+@@ -157,7 +187,7 @@ class PowerBiClient implements ContainerInjectionInterface {
     * @throws \Exception
     */
    public function executeGroupQuery(string $workspace, string $datasetId, array $body): string {
@@ -394,7 +418,7 @@ index 34987a1..6a4afa2 100644
      return $this->connect('post', $endpoint, $body);
    }
  
-@@ -177,7 +190,7 @@ class PowerBiClient implements ContainerInjectionInterface {
+@@ -177,7 +207,7 @@ class PowerBiClient implements ContainerInjectionInterface {
     * @throws \Exception
     */
    public function exportGroupReportToFile(string $workspace, string $reportId, array $body): string {
@@ -403,7 +427,7 @@ index 34987a1..6a4afa2 100644
      return $this->connect('post', $endpoint, $body);
    }
  
-@@ -198,7 +211,7 @@ class PowerBiClient implements ContainerInjectionInterface {
+@@ -198,7 +228,7 @@ class PowerBiClient implements ContainerInjectionInterface {
     *   Can throw a generic exception.
     */
    public function getGroupExportToFileStatus(string $workspace, string $reportId, string $exportId): string {
@@ -412,7 +436,7 @@ index 34987a1..6a4afa2 100644
      return $this->connect('get', $endpoint);
    }
  
-@@ -223,7 +236,7 @@ class PowerBiClient implements ContainerInjectionInterface {
+@@ -223,7 +253,7 @@ class PowerBiClient implements ContainerInjectionInterface {
     *   Can throw a generic exception.
     */
    public function getGroupExportFile(string $workspace, string $reportId, string $exportId, string $filePath, string $filename): string {
@@ -421,7 +445,7 @@ index 34987a1..6a4afa2 100644
      $filePath = $filePath . '/' . $filename;
      $fileRealPath = $this->fileSystem->realpath($filePath);
      $resource = fopen($fileRealPath, 'w+');
-@@ -251,7 +264,7 @@ class PowerBiClient implements ContainerInjectionInterface {
+@@ -251,7 +281,7 @@ class PowerBiClient implements ContainerInjectionInterface {
     *   Can throw a generic exception.
     */
    public function getGroupReport(string $workspace, string $reportId): string {
@@ -430,7 +454,7 @@ index 34987a1..6a4afa2 100644
      return $this->connect('get', $endpoint);
    }
  
-@@ -270,7 +283,7 @@ class PowerBiClient implements ContainerInjectionInterface {
+@@ -270,7 +300,7 @@ class PowerBiClient implements ContainerInjectionInterface {
     *   Can throw a generic exception.
     */
    public function getPages(string $workspace, string $reportId): string {
@@ -439,6 +463,80 @@ index 34987a1..6a4afa2 100644
      return $this->connect('get', $endpoint);
    }
  
+diff --git a/src/Commands/PwbiCommands.php b/src/Commands/PwbiCommands.php
+index 374de00..b5f48b7 100644
+--- a/src/Commands/PwbiCommands.php
++++ b/src/Commands/PwbiCommands.php
+@@ -194,15 +194,35 @@ class PwbiCommands extends DrushCommands {
+     $reportInfoRaw = $this->pwbiClient->getGroupReport($workspace_id, $report_id);
+     $reportInfo    = Json::decode($reportInfoRaw);
+ 
+-    // connect() returns a plain error string (not JSON) when an HTTP error
+-    // occurs — Json::decode() returns null in that case.
++    // connect() now returns JSON in all cases:
++    // - Success          → {"datasetId":"...","embedUrl":"...",...}
++    // - PBI error body   → {"error":{"code":"...","message":"..."}}
++    // - Empty body (403) → {"httpError":403,"httpReason":"Forbidden","message":"..."}
++    // - No response      → plain string (Json::decode → null)
+     if (!is_array($reportInfo)) {
+-      $this->io()->error('Power BI API request failed (HTTP error). Check permissions — see output below:');
++      $this->io()->error('Power BI API request failed. Raw response:');
+       $this->io()->text($reportInfoRaw);
+       return;
+     }
+ 
+-    // Power BI error object: {"error":{"code":"...","message":"..."}}.
++    // Empty-body HTTP error: tenant setting likely disabled.
++    if (isset($reportInfo['httpError'])) {
++      $status = $reportInfo['httpError'];
++      $reason = $reportInfo['httpReason'] ?? '';
++      $this->io()->error("Power BI API returned HTTP {$status} {$reason} with an empty response body.");
++      if ($status === 403) {
++        $this->io()->note([
++          'An empty 403 from the Power BI API typically means the tenant-level',
++          '"Allow service principals to use Power BI APIs" setting is disabled.',
++          'A Power BI admin must enable it at:',
++          'app.powerbigov.us/admin → Tenant settings → Developer settings',
++          'Docs: https://learn.microsoft.com/en-us/power-bi/developer/embedded/embed-service-principal',
++        ]);
++      }
++      return;
++    }
++
++    // Power BI error object with body: {"error":{"code":"...","message":"..."}}.
+     if (!empty($reportInfo['error'])) {
+       $code = $reportInfo['error']['code'] ?? 'unknown';
+       $msg  = $reportInfo['error']['message'] ?? 'no message';
+@@ -237,14 +257,26 @@ class PwbiCommands extends DrushCommands {
+ 
+     $result = Json::decode($raw);
+ 
+-    // connect() returns a plain error string on HTTP errors.
+     if (!is_array($result)) {
+-      $this->io()->error('Embed token API request failed (HTTP error). Check permissions — see output below:');
++      $this->io()->error('Embed token API request failed. Raw response:');
+       $this->io()->text($raw);
+       return;
+     }
+ 
+-    // Power BI error object.
++    if (isset($result['httpError'])) {
++      $status = $result['httpError'];
++      $reason = $result['httpReason'] ?? '';
++      $this->io()->error("Embed token API returned HTTP {$status} {$reason} with an empty response body.");
++      if ($status === 403) {
++        $this->io()->note([
++          'An empty 403 on GenerateToken typically means the tenant-level',
++          '"Allow service principals to use Power BI APIs" setting is disabled.',
++          'Docs: https://learn.microsoft.com/en-us/power-bi/developer/embedded/embed-service-principal',
++        ]);
++      }
++      return;
++    }
++
+     if (!empty($result['error'])) {
+       $code = $result['error']['code'] ?? 'unknown';
+       $msg  = $result['error']['message'] ?? 'no message';
 diff --git a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php b/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
 index 0876f69..2856a64 100644
 --- a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
