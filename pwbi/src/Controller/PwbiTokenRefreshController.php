@@ -23,7 +23,7 @@ class PwbiTokenRefreshController extends ControllerBase {
   public function __construct(
     protected readonly PowerBiClient $pwbiClient,
     protected readonly PowerBiEmbed $pwbiEmbed,
-    protected readonly LoggerChannelFactoryInterface $loggerFactory,
+    protected readonly LoggerChannelFactoryInterface $loggerChannelFactory,
   ) {}
 
   /**
@@ -86,7 +86,7 @@ class PwbiTokenRefreshController extends ControllerBase {
       $result = Json::decode($this->pwbiClient->getEmbedToken($body));
     }
     catch (\Throwable $e) {
-      $this->loggerFactory->get('pwbi')->error(
+      $this->loggerChannelFactory->get('pwbi')->error(
         'Embed token generation threw an exception for report @report: @message',
         ['@report' => $report_id, '@message' => $e->getMessage()]
       );
@@ -104,7 +104,7 @@ class PwbiTokenRefreshController extends ControllerBase {
     }
 
     if ($this->config('pwbi.settings')->get('debug_enabled')) {
-      $this->loggerFactory->get('pwbi')->info(
+      $this->loggerChannelFactory->get('pwbi')->info(
         'Embed token refreshed for report @report (workspace @workspace), expires @expiry.',
         [
           '@report'    => $report_id,
