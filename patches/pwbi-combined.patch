@@ -2364,3 +2364,22 @@ index 0000000..ff28463
 +  }
 +
 +}
+diff --git a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php b/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
+index 2856a64..f643fab 100644
+--- a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
++++ b/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
+@@ -95,6 +95,14 @@ class PowerBiEmbedFormatter extends FormatterBase {
+       $cache_max_age = 0;
+       if ($token_expiration->getTimestamp() > $current_time) {
+         $cache_max_age = $token_expiration->getTimestamp() - $current_time;
++        // When JS auto-refresh is enabled, expire the render cache before the
++        // refresh window so any new page load always gets a token with enough
++        // life remaining for the JS timer to schedule properly.
++        $pwbi_settings = $this->configFactory->get('pwbi.settings');
++        if ($pwbi_settings->get('token_refresh_enabled')) {
++          $refresh_buffer = (int) ($pwbi_settings->get('token_refresh_minutes') ?? 10) * 60;
++          $cache_max_age = max(0, $cache_max_age - $refresh_buffer);
++        }
+       }
+       $embed_array = [
+         '#cache' => [
