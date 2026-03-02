@@ -6,5 +6,6 @@ services:
       - '@oauth2_client.service'
       - '@entity_type.manager'
       - '@entity_field.manager'
+      - '@state'
     tags:
       - { name: drush.command }

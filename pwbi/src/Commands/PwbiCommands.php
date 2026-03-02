@@ -7,8 +7,10 @@ namespace Drupal\pwbi\Commands;
 use Drupal\Component\Serialization\Json;
 use Drupal\Core\Entity\EntityFieldManagerInterface;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
+use Drupal\Core\State\StateInterface;
 use Drupal\oauth2_client\Service\Oauth2ClientService;
 use Drupal\pwbi\Api\PowerBiClient;
+use Drupal\pwbi\PowerBiEmbed;
 use Drush\Attributes as CLI;
 use Drush\Commands\DrushCommands;
 use Symfony\Component\DependencyInjection\ContainerInterface;
@@ -28,6 +30,7 @@ class PwbiCommands extends DrushCommands {
     protected readonly Oauth2ClientService $auth,
     protected readonly EntityTypeManagerInterface $entityTypeManager,
     protected readonly EntityFieldManagerInterface $entityFieldManager,
+    protected readonly StateInterface $state,
   ) {
     parent::__construct();
   }
@@ -42,6 +45,7 @@ class PwbiCommands extends DrushCommands {
       $container->get('oauth2_client.service'),
       $container->get('entity_type.manager'),
       $container->get('entity_field.manager'),
+      $container->get('state'),
     );
   }
 
@@ -85,6 +89,26 @@ class PwbiCommands extends DrushCommands {
       : 'not reported';
     $expired = $token->hasExpired();
 
+    // Decode the JWT payload to verify the OAuth audience (scope).
+    // GCC requires 'analysis.usgovcloudapi.net'; commercial uses 'analysis.windows.net'.
+    $audienceLabel = 'not a JWT / could not parse';
+    $audienceWarning = FALSE;
+    $parts = explode('.', $tokenValue);
+    if (count($parts) === 3) {
+      $payloadJson = base64_decode(strtr($parts[1], '-_', '+/'), TRUE);
+      $payload = ($payloadJson !== FALSE) ? json_decode($payloadJson, TRUE) : NULL;
+      if (is_array($payload)) {
+        $audience = (string) ($payload['aud'] ?? 'unknown');
+        if (str_contains($audience, 'usgovcloudapi.net')) {
+          $audienceLabel = $audience . ' (GCC — correct)';
+        }
+        else {
+          $audienceLabel = $audience . ' WARNING: not GCC scope';
+          $audienceWarning = TRUE;
+        }
+      }
+    }
+
     $this->io()->success('OAuth2 handshake successful!');
     $this->io()->table(
       ['Property', 'Value'],
@@ -92,8 +116,19 @@ class PwbiCommands extends DrushCommands {
         ['Token (truncated)', substr($tokenValue, 0, 30) . '...'],
         ['Expires', $expiry],
         ['Is expired', $expired ? 'YES (cached token is stale)' : 'No'],
+        ['OAuth audience (aud)', $audienceLabel],
       ],
     );
+
+    if ($audienceWarning) {
+      $this->io()->warning([
+        'The access token audience does not include "usgovcloudapi.net".',
+        'For GCC deployments the OAuth2 client scope must be:',
+        '  https://analysis.usgovcloudapi.net/powerbi/api/.default',
+        'Update the scope at:',
+        '  Admin → Configuration → Services → OAuth2 Clients → pwbi_service_principal',
+      ]);
+    }
   }
 
   /**
@@ -123,15 +158,16 @@ class PwbiCommands extends DrushCommands {
         $report['label'],
         $report['workspace_id'],
         $report['report_id'],
+        $report['dataset_id'] ?: '(not cached — visit the report page first)',
       ];
     }
 
     $this->io()->table(
-      ['Media ID', 'Label', 'Workspace ID', 'Report ID'],
+      ['Media ID', 'Label', 'Workspace ID', 'Report ID', 'Dataset ID (cached)'],
       $rows,
     );
 
-    $this->io()->text(sprintf('%d report(s) found. Use workspace_id + report_id with <info>drush pwbi:token-refresh</info>.', count($reports)));
+    $this->io()->text(sprintf('%d report(s) found. Use <info>drush pwbi:token-refresh</info> to generate a fresh embed token.', count($reports)));
   }
 
   /**
@@ -159,6 +195,8 @@ class PwbiCommands extends DrushCommands {
   public function tokenRefresh(string $workspace_id = '', string $report_id = ''): void {
     $this->io()->title('Power BI Embed Token Refresh');
 
+    $cached_dataset_id = '';
+
     // Auto-discover workspace/report from Media entities when not supplied.
     if (empty($workspace_id) || empty($report_id)) {
       $reports = $this->discoverReports();
@@ -169,15 +207,30 @@ class PwbiCommands extends DrushCommands {
       }
 
       if (count($reports) > 1) {
-        $this->io()->warning(sprintf('%d reports found. Pass workspace_id and report_id explicitly, or run <info>drush pwbi:list-reports</info> to see options.', count($reports)));
-        $rows = array_map(fn($r) => [$r['media_id'], $r['label'], $r['workspace_id'], $r['report_id']], $reports);
-        $this->io()->table(['Media ID', 'Label', 'Workspace ID', 'Report ID'], $rows);
-        return;
+        // Show an interactive picker — no manual UUID entry required.
+        $choices = [];
+        foreach ($reports as $r) {
+          $cached = !empty($r['dataset_id']) ? 'dataset cached' : 'dataset not yet cached';
+          $choices[] = sprintf('%s [Media #%s] — %s', $r['label'], $r['media_id'], $cached);
+        }
+        $chosen = $this->io()->choice('Which report do you want to refresh?', $choices, $choices[0]);
+        $idx = (int) array_search($chosen, $choices, TRUE);
+        $workspace_id      = $reports[$idx]['workspace_id'];
+        $report_id         = $reports[$idx]['report_id'];
+        $cached_dataset_id = $reports[$idx]['dataset_id'];
+        $this->io()->text(sprintf('Selected: <info>%s</info> (Media #%s)', $reports[$idx]['label'], $reports[$idx]['media_id']));
       }
-
-      $workspace_id = $reports[0]['workspace_id'];
-      $report_id    = $reports[0]['report_id'];
-      $this->io()->text(sprintf('Auto-detected report: <info>%s</info> (Media #%s)', $reports[0]['label'], $reports[0]['media_id']));
+      else {
+        $workspace_id      = $reports[0]['workspace_id'];
+        $report_id         = $reports[0]['report_id'];
+        $cached_dataset_id = $reports[0]['dataset_id'];
+        $this->io()->text(sprintf('Auto-detected report: <info>%s</info> (Media #%s)', $reports[0]['label'], $reports[0]['media_id']));
+      }
+    }
+    else {
+      // IDs were provided as arguments — check if we have a cached dataset_id.
+      $meta = $this->state->get(PowerBiEmbed::PWBI_REPORT_META, []);
+      $cached_dataset_id = $meta[$report_id]['dataset_id'] ?? '';
     }
 
     // Validate both IDs are proper UUIDs before hitting the API.
@@ -189,35 +242,62 @@ class PwbiCommands extends DrushCommands {
       }
     }
 
-    // Fetch datasetId from the API — same call the field formatter makes.
-    $this->io()->text("Fetching report info for workspace <info>{$workspace_id}</info>...");
-    $reportInfoRaw = $this->pwbiClient->getGroupReport($workspace_id, $report_id);
-    $reportInfo    = Json::decode($reportInfoRaw);
-
-    // connect() returns a plain error string (not JSON) when an HTTP error
-    // occurs — Json::decode() returns null in that case.
-    if (!is_array($reportInfo)) {
-      $this->io()->error('Power BI API request failed (HTTP error). Check permissions — see output below:');
-      $this->io()->text($reportInfoRaw);
-      return;
+    // Use cached dataset_id when available to skip an API round-trip.
+    if (!empty($cached_dataset_id)) {
+      $dataset_id = $cached_dataset_id;
+      $this->io()->text("Dataset ID: <info>{$dataset_id}</info> (from cache)");
     }
+    else {
+      // Fetch datasetId from the API — same call the field formatter makes.
+      $this->io()->text("Fetching report info for workspace <info>{$workspace_id}</info>...");
+      $reportInfoRaw = $this->pwbiClient->getGroupReport($workspace_id, $report_id);
+      $reportInfo    = Json::decode($reportInfoRaw);
 
-    // Power BI error object: {"error":{"code":"...","message":"..."}}.
-    if (!empty($reportInfo['error'])) {
-      $code = $reportInfo['error']['code'] ?? 'unknown';
-      $msg  = $reportInfo['error']['message'] ?? 'no message';
-      $this->io()->error("Power BI API error [{$code}]: {$msg}");
-      return;
+      // connect() now returns JSON in all cases:
+      // - Success          → {"datasetId":"...","embedUrl":"...",...}
+      // - PBI error body   → {"error":{"code":"...","message":"..."}}
+      // - Empty body (403) → {"httpError":403,"httpReason":"Forbidden","message":"..."}
+      // - No response      → plain string (Json::decode → null)
+      if (!is_array($reportInfo)) {
+        $this->io()->error('Power BI API request failed. Raw response:');
+        $this->io()->text($reportInfoRaw);
+        return;
+      }
+
+      // Empty-body HTTP error: tenant setting likely disabled.
+      if (isset($reportInfo['httpError'])) {
+        $status = $reportInfo['httpError'];
+        $reason = $reportInfo['httpReason'] ?? '';
+        $this->io()->error("Power BI API returned HTTP {$status} {$reason} with an empty response body.");
+        if ($status === 403) {
+          $this->io()->note([
+            'An empty 403 from the Power BI API typically means the tenant-level',
+            '"Allow service principals to use Power BI APIs" setting is disabled.',
+            'A Power BI admin must enable it at:',
+            'app.powerbigov.us/admin → Tenant settings → Developer settings',
+            'Docs: https://learn.microsoft.com/en-us/power-bi/developer/embedded/embed-service-principal',
+          ]);
+        }
+        return;
+      }
+
+      // Power BI error object with body: {"error":{"code":"...","message":"..."}}.
+      if (!empty($reportInfo['error'])) {
+        $code = $reportInfo['error']['code'] ?? 'unknown';
+        $msg  = $reportInfo['error']['message'] ?? 'no message';
+        $this->io()->error("Power BI API error [{$code}]: {$msg}");
+        return;
+      }
+
+      if (empty($reportInfo['datasetId'])) {
+        $this->io()->error('Power BI returned a report object but datasetId is missing. Raw response:');
+        $this->io()->text($reportInfoRaw);
+        return;
+      }
+
+      $dataset_id = $reportInfo['datasetId'];
+      $this->io()->text("Dataset ID: <info>{$dataset_id}</info>");
     }
-
-    if (empty($reportInfo['datasetId'])) {
-      $this->io()->error('Power BI returned a report object but datasetId is missing. Raw response:');
-      $this->io()->text($reportInfoRaw);
-      return;
-    }
-
-    $dataset_id = $reportInfo['datasetId'];
-    $this->io()->text("Dataset ID: <info>{$dataset_id}</info>");
 
     // Generate the embed token.
     $body = [
@@ -237,14 +317,26 @@ class PwbiCommands extends DrushCommands {
 
     $result = Json::decode($raw);
 
-    // connect() returns a plain error string on HTTP errors.
     if (!is_array($result)) {
-      $this->io()->error('Embed token API request failed (HTTP error). Check permissions — see output below:');
+      $this->io()->error('Embed token API request failed. Raw response:');
       $this->io()->text($raw);
       return;
     }
 
-    // Power BI error object.
+    if (isset($result['httpError'])) {
+      $status = $result['httpError'];
+      $reason = $result['httpReason'] ?? '';
+      $this->io()->error("Embed token API returned HTTP {$status} {$reason} with an empty response body.");
+      if ($status === 403) {
+        $this->io()->note([
+          'An empty 403 on GenerateToken typically means the tenant-level',
+          '"Allow service principals to use Power BI APIs" setting is disabled.',
+          'Docs: https://learn.microsoft.com/en-us/power-bi/developer/embedded/embed-service-principal',
+        ]);
+      }
+      return;
+    }
+
     if (!empty($result['error'])) {
       $code = $result['error']['code'] ?? 'unknown';
       $msg  = $result['error']['message'] ?? 'no message';
@@ -276,10 +368,10 @@ class PwbiCommands extends DrushCommands {
    * Discover all Power BI reports from Media entities on this site.
    *
    * Finds every media entity that has a field of type pwbi_embed and returns
-   * its workspace_id and report_id values.
+   * its workspace_id, report_id, and cached dataset_id (if available).
    *
-   * @return array<int, array{media_id: string|int, label: string, workspace_id: string, report_id: string}>
-   *   Each entry has media_id, label, workspace_id, report_id.
+   * @return array<int, array{media_id: string|int, label: string, workspace_id: string, report_id: string, dataset_id: string}>
+   *   Each entry has media_id, label, workspace_id, report_id, dataset_id.
    */
   protected function discoverReports(): array {
     // Find all fields of type pwbi_embed across all entity types.
@@ -289,6 +381,9 @@ class PwbiCommands extends DrushCommands {
     if (empty($media_fields)) {
       return [];
     }
+
+    // Load the per-report metadata cache written by PowerBiEmbed::getEmbedDataFromApi().
+    $meta = $this->state->get(PowerBiEmbed::PWBI_REPORT_META, []);
 
     $reports = [];
     $storage = $this->entityTypeManager->getStorage('media');
@@ -316,11 +411,13 @@ class PwbiCommands extends DrushCommands {
           continue;
         }
 
+        $report_id = (string) $value['report_id'];
         $reports[] = [
           'media_id'     => $entity->id(),
           'label'        => $entity->label() ?? '(no label)',
           'workspace_id' => (string) $value['workspace_id'],
-          'report_id'    => (string) $value['report_id'],
+          'report_id'    => $report_id,
+          'dataset_id'   => $meta[$report_id]['dataset_id'] ?? '',
         ];
       }
     }
