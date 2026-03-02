@@ -97,6 +97,11 @@ class PowerBiEmbedFormatter extends FormatterBase {
       $report_height_units = $item->getValue()['report_height_units'];
       $report_width_units = $item->getValue()['report_width_units'];
       $report_configuration = $this->pwbiEmbed->getEmbedDataFromApi($workspace, $report_id);
+      if (empty($report_configuration)) {
+        // API call failed — getEmbedDataFromApi() already logged the error.
+        // Render nothing for this item rather than crashing the page.
+        continue;
+      }
       $token_expiration = new DrupalDateTime((string) $report_configuration['tokenExpirationDate']);
       $current_time = $this->time->getRequestTime();
       $cache_max_age = 0;
