@@ -194,8 +194,24 @@ class PwbiCommands extends DrushCommands {
     $reportInfoRaw = $this->pwbiClient->getGroupReport($workspace_id, $report_id);
     $reportInfo    = Json::decode($reportInfoRaw);
 
-    if (!is_array($reportInfo) || empty($reportInfo['datasetId'])) {
-      $this->io()->error('Could not retrieve datasetId from the Power BI API. Raw response:');
+    // connect() returns a plain error string (not JSON) when an HTTP error
+    // occurs — Json::decode() returns null in that case.
+    if (!is_array($reportInfo)) {
+      $this->io()->error('Power BI API request failed (HTTP error). Check permissions — see output below:');
+      $this->io()->text($reportInfoRaw);
+      return;
+    }
+
+    // Power BI error object: {"error":{"code":"...","message":"..."}}.
+    if (!empty($reportInfo['error'])) {
+      $code = $reportInfo['error']['code'] ?? 'unknown';
+      $msg  = $reportInfo['error']['message'] ?? 'no message';
+      $this->io()->error("Power BI API error [{$code}]: {$msg}");
+      return;
+    }
+
+    if (empty($reportInfo['datasetId'])) {
+      $this->io()->error('Power BI returned a report object but datasetId is missing. Raw response:');
       $this->io()->text($reportInfoRaw);
       return;
     }
@@ -221,8 +237,23 @@ class PwbiCommands extends DrushCommands {
 
     $result = Json::decode($raw);
 
-    if (!is_array($result) || empty($result['token'])) {
-      $this->io()->error('API response did not contain a token. Raw response:');
+    // connect() returns a plain error string on HTTP errors.
+    if (!is_array($result)) {
+      $this->io()->error('Embed token API request failed (HTTP error). Check permissions — see output below:');
+      $this->io()->text($raw);
+      return;
+    }
+
+    // Power BI error object.
+    if (!empty($result['error'])) {
+      $code = $result['error']['code'] ?? 'unknown';
+      $msg  = $result['error']['message'] ?? 'no message';
+      $this->io()->error("Power BI embed token error [{$code}]: {$msg}");
+      return;
+    }
+
+    if (empty($result['token'])) {
+      $this->io()->error('Power BI returned a response but the token field is missing. Raw response:');
       $this->io()->text($raw);
       return;
     }
