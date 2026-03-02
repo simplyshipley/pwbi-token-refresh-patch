@@ -118,12 +118,26 @@ class PowerBiEmbedConfigForm extends ConfigFormBase {
     $settings = ['pwbi_workspaces' => $form_state->getValue('pwbi_workspaces')];
     $this->pwbiEmbed->setEmbedConfiguration($settings);
 
+    // Detect endpoint change before saving so we can compare old vs new.
+    $old_endpoint = $this->config('pwbi.settings')->get('pwbi_api_endpoint')
+      ?? 'https://api.powerbi.com';
+    $new_endpoint = (string) $form_state->getValue('pwbi_api_endpoint');
+
     // New: save API settings to Config API.
     $this->config('pwbi.settings')
-      ->set('pwbi_api_endpoint', $form_state->getValue('pwbi_api_endpoint'))
+      ->set('pwbi_api_endpoint', $new_endpoint)
       ->set('token_refresh_enabled', (bool) $form_state->getValue('token_refresh_enabled'))
       ->set('token_refresh_minutes', (int) $form_state->getValue('token_refresh_minutes'))
       ->save();
+
+    // Clear the cached Service Principal OAuth2 token when the cloud endpoint
+    // changes so a fresh token is requested with the correct audience scope.
+    if ($old_endpoint !== $new_endpoint) {
+      \Drupal::state()->delete('oauth2_client_access_token-pwbi_service_principal');
+      $this->messenger()->addWarning($this->t(
+        'Power BI API endpoint changed — OAuth2 token cache cleared. A fresh token will be requested on next use.'
+      ));
+    }
 
     parent::submitForm($form, $form_state);
   }

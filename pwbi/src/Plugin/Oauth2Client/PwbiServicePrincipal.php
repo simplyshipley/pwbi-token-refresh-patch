@@ -15,6 +15,11 @@ use TheNetworg\OAuth2\Client\Provider\Azure;
 /**
  * Authentication plugin for Power Bi service principal.
  *
+ * The annotation values below are commercial defaults. At runtime the four
+ * URL methods (getScope, getTokenUri, getAuthorizationUri, getResourceUri)
+ * read pwbi.settings:pwbi_api_endpoint and return the correct URLs for the
+ * configured cloud — commercial, GCC, GCC High, or DoD.
+ *
  * @Oauth2Client(
  *   id = "pwbi_service_principal",
  *   name = @Translation("Power Bi service principal auth"),
@@ -22,8 +27,8 @@ use TheNetworg\OAuth2\Client\Provider\Azure;
  *   label = @Translation("Power Bi service principal"),
  *   authorization_uri = "https://login.microsoftonline.com/%s/oauth2/v2.0/authorize/",
  *   token_uri = "https://login.windows.net/%s/oauth2/v2.0/token/",
- *   resource_owner_uri = "https://analysis.usgovcloudapi.net/powerbi/api",
- *   source = "https://analysis.usgovcloudapi.net/powerbi/api/.default",
+ *   resource_owner_uri = "https://analysis.windows.net/powerbi/api",
+ *   source = "https://analysis.windows.net/powerbi/api/.default",
  * )
  */
 class PwbiServicePrincipal extends Oauth2ClientPluginBase {
@@ -31,13 +36,90 @@ class PwbiServicePrincipal extends Oauth2ClientPluginBase {
   use StateTokenStorage;
 
   /**
-   * Retrieves the scope for authentication.
+   * OAuth2 endpoint map keyed by the pwbi_api_endpoint config value.
    *
-   * @return string|null
-   *   The tenant value.
+   * authorization_uri / token_uri use %s as a sprintf placeholder for the
+   * tenant ID. GCC shares commercial Azure AD; GCC High and DoD use the
+   * US Government Azure AD (login.microsoftonline.us).
+   */
+  private const CLOUD_OAUTH_ENDPOINTS = [
+    'https://api.powerbi.com' => [
+      'authorization_uri'  => 'https://login.microsoftonline.com/%s/oauth2/v2.0/authorize/',
+      'token_uri'          => 'https://login.windows.net/%s/oauth2/v2.0/token/',
+      'resource_owner_uri' => 'https://analysis.windows.net/powerbi/api',
+      'scope'              => 'https://analysis.windows.net/powerbi/api/.default',
+    ],
+    'https://api.powerbigov.us' => [
+      'authorization_uri'  => 'https://login.microsoftonline.com/%s/oauth2/v2.0/authorize/',
+      'token_uri'          => 'https://login.microsoftonline.com/%s/oauth2/v2.0/token/',
+      'resource_owner_uri' => 'https://analysis.usgovcloudapi.net/powerbi/api',
+      'scope'              => 'https://analysis.usgovcloudapi.net/powerbi/api/.default',
+    ],
+    'https://api.high.powerbigov.us' => [
+      'authorization_uri'  => 'https://login.microsoftonline.us/%s/oauth2/v2.0/authorize/',
+      'token_uri'          => 'https://login.microsoftonline.us/%s/oauth2/v2.0/token/',
+      'resource_owner_uri' => 'https://analysis.usgovcloudapi.net/powerbi/api',
+      'scope'              => 'https://analysis.usgovcloudapi.net/powerbi/api/.default',
+    ],
+    'https://api.mil.powerbigov.us' => [
+      'authorization_uri'  => 'https://login.microsoftonline.us/%s/oauth2/v2.0/authorize/',
+      'token_uri'          => 'https://login.microsoftonline.us/%s/oauth2/v2.0/token/',
+      'resource_owner_uri' => 'https://analysis.usgovcloudapi.net/powerbi/api',
+      'scope'              => 'https://analysis.usgovcloudapi.net/powerbi/api/.default',
+    ],
+  ];
+
+  /**
+   * Returns the OAuth2 endpoint config for the currently configured cloud.
+   *
+   * Falls back to the commercial entry when no config exists.
+   *
+   * @return array<string, string>
+   *   Keys: authorization_uri, token_uri, resource_owner_uri, scope.
+   */
+  private function getCloudOauthConfig(): array {
+    $endpoint = \Drupal::config('pwbi.settings')->get('pwbi_api_endpoint')
+      ?? 'https://api.powerbi.com';
+    return self::CLOUD_OAUTH_ENDPOINTS[$endpoint]
+      ?? self::CLOUD_OAUTH_ENDPOINTS['https://api.powerbi.com'];
+  }
+
+  /**
+   * {@inheritdoc}
+   *
+   * Returns the OAuth2 scope for the configured cloud environment.
    */
   public function getScope(): string|null {
-    return $this->pluginDefinition['source'] ?? NULL;
+    return $this->getCloudOauthConfig()['scope'];
+  }
+
+  /**
+   * {@inheritdoc}
+   *
+   * Returns the token endpoint URL (with %s tenant placeholder) for the
+   * configured cloud environment.
+   */
+  public function getTokenUri(): string {
+    return $this->getCloudOauthConfig()['token_uri'];
+  }
+
+  /**
+   * {@inheritdoc}
+   *
+   * Returns the authorization endpoint URL (with %s tenant placeholder) for
+   * the configured cloud environment.
+   */
+  public function getAuthorizationUri(): string {
+    return $this->getCloudOauthConfig()['authorization_uri'];
+  }
+
+  /**
+   * {@inheritdoc}
+   *
+   * Returns the resource owner URL for the configured cloud environment.
+   */
+  public function getResourceUri(): string {
+    return $this->getCloudOauthConfig()['resource_owner_uri'];
   }
 
   /**

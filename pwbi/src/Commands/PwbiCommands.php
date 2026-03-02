@@ -20,6 +20,7 @@ use Symfony\Component\DependencyInjection\ContainerInterface;
  *
  * Commands:
  *   pwbi:auth-check    — verify OAuth2 service principal handshake.
+ *   pwbi:flush-token   — delete the cached Service Principal OAuth2 token.
  *   pwbi:list-reports  — list all Power BI reports configured as Media entities.
  *   pwbi:token-refresh — generate a fresh embed token for a report.
  */
@@ -129,6 +130,30 @@ class PwbiCommands extends DrushCommands {
         '  Admin → Configuration → Services → OAuth2 Clients → pwbi_service_principal',
       ]);
     }
+  }
+
+  /**
+   * Delete the cached Service Principal OAuth2 token from Drupal State.
+   *
+   * Forces oauth2_client to request a fresh token on the next API call.
+   * Use this after changing the cloud endpoint, rotating client credentials,
+   * or when the cached token has the wrong audience for your environment.
+   */
+  #[CLI\Command(name: 'pwbi:flush-token', aliases: ['pwbi-ft'])]
+  #[CLI\Help(description: 'Delete the cached Service Principal OAuth2 token.')]
+  #[CLI\Usage(name: 'drush pwbi:flush-token', description: 'Clear the cached token so a fresh one is fetched on next use.')]
+  public function flushToken(): void {
+    $key = 'oauth2_client_access_token-pwbi_service_principal';
+    $existing = $this->state->get($key);
+
+    if ($existing === NULL) {
+      $this->io()->note('No cached Service Principal token found — nothing to flush.');
+      return;
+    }
+
+    $this->state->delete($key);
+    $this->io()->success('Cached Service Principal OAuth2 token deleted. A fresh token will be requested on next use.');
+    $this->io()->text('Run <info>drush pwbi:auth-check</info> to verify the new token.');
   }
 
   /**
