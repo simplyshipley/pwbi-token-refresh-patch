@@ -20,7 +20,7 @@ index 0000000..64d9f8d
 +overriden
 +Çads
 diff --git a/components/pwbi-embed/pwbi-embed.js b/components/pwbi-embed/pwbi-embed.js
-index fd784bc..0629b4b 100644
+index fd784bc..7b5725c 100644
 --- a/components/pwbi-embed/pwbi-embed.js
 +++ b/components/pwbi-embed/pwbi-embed.js
 @@ -1,21 +1,114 @@
@@ -159,7 +159,7 @@ index fd784bc..0629b4b 100644
          // Get a reference to the HTML element that contains the embedded report.
          const powerBiEmbedParams = {
            embedConfiguration,
-@@ -33,37 +127,59 @@
+@@ -33,37 +127,92 @@
            detail: powerBiEmbedParams,
          });
          window.dispatchEvent(PowerBiPreEmbed);
@@ -208,6 +208,39 @@ index fd784bc..0629b4b 100644
      },
 -    setEvents(settings, powerbi) {
 +    setEvents(settings, powerbiClient) {
++      // Suppress subscribe heartbeat 405 errors if the setting is enabled.
++      // The Power BI SDK makes periodic POST requests to the /subscribe
++      // endpoint for push dataset updates. On GCC, the routing cluster
++      // redirects POST→GET, producing a 405 that the SDK cannot recover from.
++      // For sites using scheduled (not streaming) refresh, these requests are
++      // noise. We intercept them and return a mock 200 so the SDK stops
++      // retrying. The guard prevents double-patching across multiple attach()
++      // calls or reports on the same page.
++      const firstEmbed = Object.values(settings.pwbi_embed)[0] ?? {};
++      if (firstEmbed.block_subscribe_heartbeat && !window._pwbiSubscribeBlocked) {
++        window._pwbiSubscribeBlocked = true;
++        const originalFetch = window.fetch;
++        window.fetch = function(resource, options) {
++          let url = '';
++          if (typeof resource === 'string') {
++            url = resource;
++          } else if (resource instanceof URL) {
++            url = resource.href;
++          } else if (resource && typeof resource.url === 'string') {
++            url = resource.url;
++          }
++          // Only intercept external subscribe requests — never Drupal-internal ones.
++          const base = drupalSettings.path.baseUrl;
++          if (!url.startsWith(base) && url.includes('/subscribe')) {
++            return Promise.resolve(new Response('{}', {
++              status: 200,
++              headers: { 'Content-Type': 'application/json' },
++            }));
++          }
++          return originalFetch.apply(this, arguments);
++        };
++      }
++
        const powerBiEmbed = {
          callback: this.runEmbeds,
          pwbi_embed: settings.pwbi_embed,
@@ -229,7 +262,7 @@ index fd784bc..0629b4b 100644
          }
        });
        document.dispatchEvent(blockEmbedEvent);
-@@ -75,7 +191,7 @@
+@@ -75,7 +224,7 @@
        if (!settings.pwbi_flag) {
          const waitForGlobal = function (key, settings) {
            if (window[key]) {
@@ -238,7 +271,7 @@ index fd784bc..0629b4b 100644
            } else {
              setTimeout(function () {
                waitForGlobal(key, settings);
-@@ -83,7 +199,7 @@
+@@ -83,7 +232,7 @@
            }
          };
          settings.pwbi_flag = true;
@@ -249,16 +282,17 @@ index fd784bc..0629b4b 100644
      detach() {},
 diff --git a/config/install/pwbi.settings.yml b/config/install/pwbi.settings.yml
 new file mode 100644
-index 0000000..303aeb9
+index 0000000..b692f9f
 --- /dev/null
 +++ b/config/install/pwbi.settings.yml
-@@ -0,0 +1,4 @@
+@@ -0,0 +1,5 @@
 +pwbi_api_endpoint: 'https://api.powerbi.com'
 +token_refresh_enabled: false
 +token_refresh_minutes: 10
 +debug_enabled: false
++block_subscribe_heartbeat: false
 diff --git a/config/schema/pwbi.schema.yml b/config/schema/pwbi.schema.yml
-index 6397c5b..778d4bc 100644
+index 6397c5b..877cd44 100644
 --- a/config/schema/pwbi.schema.yml
 +++ b/config/schema/pwbi.schema.yml
 @@ -5,6 +5,12 @@ oauth2_client.oauth2_client.*.third_party.pwbi:
@@ -274,7 +308,7 @@ index 6397c5b..778d4bc 100644
      use_cert:
        type: string
        label: Use certificate
-@@ -20,6 +26,23 @@ pwbi_embed.embed:
+@@ -20,6 +26,26 @@ pwbi_embed.embed:
        type: string
        label: PowerBi Workspaces
  
@@ -294,6 +328,9 @@ index 6397c5b..778d4bc 100644
 +    debug_enabled:
 +      type: boolean
 +      label: Enable debug logging
++    block_subscribe_heartbeat:
++      type: boolean
++      label: Block subscribe heartbeat requests
 +
  media.source.pwbi_embed_visual:
    type: media.source.field_aware
@@ -1820,7 +1857,7 @@ index 0000000..eae7751
 +
 +}
 diff --git a/src/Form/PowerBiEmbedConfigForm.php b/src/Form/PowerBiEmbedConfigForm.php
-index 5c2b2e7..eb12a1a 100644
+index 5c2b2e7..a2d1959 100644
 --- a/src/Form/PowerBiEmbedConfigForm.php
 +++ b/src/Form/PowerBiEmbedConfigForm.php
 @@ -4,19 +4,25 @@ declare(strict_types=1);
@@ -1882,7 +1919,7 @@ index 5c2b2e7..eb12a1a 100644
     */
    public function getFormId(): string {
      return 'pwbi_settings';
-@@ -46,34 +54,108 @@ class PowerBiEmbedConfigForm extends FormBase {
+@@ -46,34 +54,116 @@ class PowerBiEmbedConfigForm extends FormBase {
     * {@inheritdoc}
     */
    public function buildForm(array $form, FormStateInterface $form_state): array {
@@ -1930,17 +1967,24 @@ index 5c2b2e7..eb12a1a 100644
 +      '#states' => [
 +        'visible' => [':input[name="token_refresh_enabled"]' => ['checked' => TRUE]],
 +      ],
-     ];
--    $form['actions']['submit'] = [
--      '#type' => 'submit',
--      '#value' => $this->t('Submit'),
--      '#button_type' => 'primary',
++    ];
 +
 +    $form['debug_enabled'] = [
 +      '#type' => 'checkbox',
 +      '#title' => $this->t('Enable debug logging'),
 +      '#default_value' => $pwbi_settings->get('debug_enabled') ?? FALSE,
 +      '#description' => $this->t('Log token refresh activity to the browser console and Drupal watchdog. Disable in production.'),
+     ];
+-    $form['actions']['submit'] = [
+-      '#type' => 'submit',
+-      '#value' => $this->t('Submit'),
+-      '#button_type' => 'primary',
++
++    $form['block_subscribe_heartbeat'] = [
++      '#type' => 'checkbox',
++      '#title' => $this->t('Suppress subscribe heartbeat errors'),
++      '#default_value' => $pwbi_settings->get('block_subscribe_heartbeat') ?? FALSE,
++      '#description' => $this->t('Intercepts the Power BI SDK\'s periodic /subscribe requests and returns a mock 200, eliminating console 405 errors. Safe to enable when reports use scheduled refresh rather than streaming/push datasets.'),
      ];
 +
      return $form;
@@ -1988,6 +2032,7 @@ index 5c2b2e7..eb12a1a 100644
 +      ->set('token_refresh_enabled', (bool) $form_state->getValue('token_refresh_enabled'))
 +      ->set('token_refresh_minutes', (int) $form_state->getValue('token_refresh_minutes'))
 +      ->set('debug_enabled', (bool) $form_state->getValue('debug_enabled'))
++      ->set('block_subscribe_heartbeat', (bool) $form_state->getValue('block_subscribe_heartbeat'))
 +      ->save();
 +
 +    // Clear the cached Service Principal OAuth2 token when the cloud endpoint
@@ -2004,7 +2049,7 @@ index 5c2b2e7..eb12a1a 100644
  
  }
 diff --git a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php b/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
-index 0876f69..89333cc 100644
+index 0876f69..a23964a 100644
 --- a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
 +++ b/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
 @@ -5,6 +5,10 @@ declare(strict_types=1);
@@ -2102,7 +2147,7 @@ index 0876f69..89333cc 100644
              ],
              'language' => $langcode,
            ],
-@@ -175,20 +205,46 @@ class PowerBiEmbedFormatter extends FormatterBase {
+@@ -175,20 +205,47 @@ class PowerBiEmbedFormatter extends FormatterBase {
     * @return array <mixed>
     *   The options that will be used to embed a powerbi report.
     */
@@ -2139,6 +2184,7 @@ index 0876f69..89333cc 100644
 +    $embed_options['token_refresh_enabled'] = (bool) ($pwbi_settings->get('token_refresh_enabled') ?? FALSE);
 +    $embed_options['token_refresh_minutes'] = (int) ($pwbi_settings->get('token_refresh_minutes') ?? 10);
 +    $embed_options['debug_enabled'] = (bool) ($pwbi_settings->get('debug_enabled') ?? FALSE);
++    $embed_options['block_subscribe_heartbeat'] = (bool) ($pwbi_settings->get('block_subscribe_heartbeat') ?? FALSE);
 +
 +    // Generate a per-session CSRF token for the token refresh endpoint.
 +    // The route has _csrf_token: TRUE, so the JS must append ?token=... to

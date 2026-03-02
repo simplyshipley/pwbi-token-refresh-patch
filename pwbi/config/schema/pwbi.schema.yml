@@ -42,6 +42,9 @@ pwbi.settings:
     debug_enabled:
       type: boolean
       label: Enable debug logging
+    block_subscribe_heartbeat:
+      type: boolean
+      label: Block subscribe heartbeat requests
 
 media.source.pwbi_embed_visual:
   type: media.source.field_aware
