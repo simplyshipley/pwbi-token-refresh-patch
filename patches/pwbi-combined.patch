@@ -20,10 +20,10 @@ index 0000000..64d9f8d
 +overriden
 +Çads
 diff --git a/components/pwbi-embed/pwbi-embed.js b/components/pwbi-embed/pwbi-embed.js
-index fd784bc..9cb8f46 100644
+index fd784bc..c27224f 100644
 --- a/components/pwbi-embed/pwbi-embed.js
 +++ b/components/pwbi-embed/pwbi-embed.js
-@@ -1,21 +1,114 @@
+@@ -1,21 +1,110 @@
  ((Drupal) => {
 +  // Minutes before token expiration to trigger a refresh.
 +  const MINUTES_BEFORE_EXPIRATION = 10;
@@ -85,11 +85,7 @@ index fd784bc..9cb8f46 100644
 +
 +    const { workspaceId, id: reportId, datasetId } = embedSettings;
 +    const base = drupalSettings.path.baseUrl;
-+    // Append the CSRF token required by the route's _csrf_token: TRUE setting.
-+    const csrfParam = embedSettings.token_refresh_csrf
-+      ? `&token=${encodeURIComponent(embedSettings.token_refresh_csrf)}`
-+      : '';
-+    const refreshUrl = `${base}pwbi/token-refresh/${workspaceId}/${reportId}?dataset_id=${encodeURIComponent(datasetId)}${csrfParam}`;
++    const refreshUrl = `${base}pwbi/token-refresh/${workspaceId}/${reportId}?dataset_id=${encodeURIComponent(datasetId)}`;
 +
 +    try {
 +      const response = await fetch(refreshUrl, {
@@ -151,7 +147,7 @@ index fd784bc..9cb8f46 100644
            return;
          }
  
-@@ -23,6 +116,7 @@
+@@ -23,6 +112,7 @@
          if (embedConfiguration.settings === undefined) {
            embedConfiguration.settings = {};
          }
@@ -159,7 +155,7 @@ index fd784bc..9cb8f46 100644
          // Get a reference to the HTML element that contains the embedded report.
          const powerBiEmbedParams = {
            embedConfiguration,
-@@ -33,37 +127,108 @@
+@@ -33,37 +123,59 @@
            detail: powerBiEmbedParams,
          });
          window.dispatchEvent(PowerBiPreEmbed);
@@ -208,55 +204,6 @@ index fd784bc..9cb8f46 100644
      },
 -    setEvents(settings, powerbi) {
 +    setEvents(settings, powerbiClient) {
-+      // Optionally intercept Power BI SDK requests that produce noisy errors.
-+      //
-+      // /subscribe  — SDK push-update channel. On GCC the routing cluster
-+      //               redirects POST→GET, producing a 405 the SDK can't
-+      //               recover from. Safe to suppress for scheduled-refresh
-+      //               reports (non-streaming datasets).
-+      //
-+      // /v2/track   — Microsoft telemetry. Sends usage data (load times,
-+      //               interactions, errors) to Microsoft servers. Block if
-+      //               outbound telemetry is prohibited by policy.
-+      //
-+      // The guard (_pwbiFetchPatched) prevents double-patching across multiple
-+      // attach() calls or multiple embeds on the same page.
-+      const firstEmbed = Object.values(settings.pwbi_embed)[0] ?? {};
-+      const blockSubscribe = firstEmbed.block_subscribe_heartbeat;
-+      const blockTelemetry = firstEmbed.block_telemetry;
-+
-+      if ((blockSubscribe || blockTelemetry) && !window._pwbiFetchPatched) {
-+        window._pwbiFetchPatched = true;
-+        const originalFetch = window.fetch;
-+        window.fetch = function(resource, options) {
-+          let url = '';
-+          if (typeof resource === 'string') {
-+            url = resource;
-+          } else if (resource instanceof URL) {
-+            url = resource.href;
-+          } else if (resource && typeof resource.url === 'string') {
-+            url = resource.url;
-+          }
-+          // Only intercept external requests — never Drupal-internal ones.
-+          const base = drupalSettings.path.baseUrl;
-+          if (!url.startsWith(base)) {
-+            if (blockSubscribe && url.includes('/subscribe')) {
-+              return Promise.resolve(new Response('{}', {
-+                status: 200,
-+                headers: { 'Content-Type': 'application/json' },
-+              }));
-+            }
-+            if (blockTelemetry && url.includes('/v2/track')) {
-+              return Promise.resolve(new Response('{}', {
-+                status: 200,
-+                headers: { 'Content-Type': 'application/json' },
-+              }));
-+            }
-+          }
-+          return originalFetch.apply(this, arguments);
-+        };
-+      }
-+
        const powerBiEmbed = {
          callback: this.runEmbeds,
          pwbi_embed: settings.pwbi_embed,
@@ -278,7 +225,7 @@ index fd784bc..9cb8f46 100644
          }
        });
        document.dispatchEvent(blockEmbedEvent);
-@@ -75,7 +240,7 @@
+@@ -75,7 +187,7 @@
        if (!settings.pwbi_flag) {
          const waitForGlobal = function (key, settings) {
            if (window[key]) {
@@ -287,7 +234,7 @@ index fd784bc..9cb8f46 100644
            } else {
              setTimeout(function () {
                waitForGlobal(key, settings);
-@@ -83,7 +248,7 @@
+@@ -83,7 +195,7 @@
            }
          };
          settings.pwbi_flag = true;
@@ -298,18 +245,16 @@ index fd784bc..9cb8f46 100644
      detach() {},
 diff --git a/config/install/pwbi.settings.yml b/config/install/pwbi.settings.yml
 new file mode 100644
-index 0000000..a5ec6b7
+index 0000000..303aeb9
 --- /dev/null
 +++ b/config/install/pwbi.settings.yml
-@@ -0,0 +1,6 @@
+@@ -0,0 +1,4 @@
 +pwbi_api_endpoint: 'https://api.powerbi.com'
 +token_refresh_enabled: false
 +token_refresh_minutes: 10
 +debug_enabled: false
-+block_subscribe_heartbeat: false
-+block_telemetry: false
 diff --git a/config/schema/pwbi.schema.yml b/config/schema/pwbi.schema.yml
-index 6397c5b..c157d8e 100644
+index 6397c5b..778d4bc 100644
 --- a/config/schema/pwbi.schema.yml
 +++ b/config/schema/pwbi.schema.yml
 @@ -5,6 +5,12 @@ oauth2_client.oauth2_client.*.third_party.pwbi:
@@ -325,7 +270,7 @@ index 6397c5b..c157d8e 100644
      use_cert:
        type: string
        label: Use certificate
-@@ -20,6 +26,29 @@ pwbi_embed.embed:
+@@ -20,6 +26,23 @@ pwbi_embed.embed:
        type: string
        label: PowerBi Workspaces
  
@@ -345,12 +290,6 @@ index 6397c5b..c157d8e 100644
 +    debug_enabled:
 +      type: boolean
 +      label: Enable debug logging
-+    block_subscribe_heartbeat:
-+      type: boolean
-+      label: Block subscribe heartbeat requests
-+    block_telemetry:
-+      type: boolean
-+      label: Block telemetry tracking requests
 +
  media.source.pwbi_embed_visual:
    type: media.source.field_aware
@@ -737,210 +676,6 @@ index 0000000..ff53f76
 +  }
 +
 +}
-diff --git a/modules/pwbi_purge/tests/src/Functional/ConfigFormTest.php b/modules/pwbi_purge/tests/src/Functional/ConfigFormTest.php
-new file mode 100644
-index 0000000..feeb95d
---- /dev/null
-+++ b/modules/pwbi_purge/tests/src/Functional/ConfigFormTest.php
-@@ -0,0 +1,50 @@
-+<?php
-+
-+declare(strict_types=1);
-+
-+namespace Drupal\Tests\pwbi_purge\Functional;
-+
-+use Drupal\Core\Url;
-+use Drupal\Tests\BrowserTestBase;
-+
-+/**
-+ * Test for the purge configuration form.
-+ */
-+class ConfigFormTest extends BrowserTestBase {
-+
-+  /**
-+   * {@inheritdoc}
-+   */
-+  protected static $modules = [
-+    'pwbi_purge',
-+  ];
-+
-+  /**
-+   * {@inheritdoc}
-+   */
-+  protected $defaultTheme = 'stark';
-+
-+  /**
-+   * Tests the form for the purge configuration.
-+   */
-+  public function testConfigFormP(): void {
-+    $user = $this->drupalCreateUser([
-+      'configure pwbi',
-+    ]);
-+
-+    $assert_session = $this->assertSession();
-+    $this->drupalGet(Url::fromRoute('pwbi_purge.settings'));
-+    $assert_session->statusCodeEquals(403);
-+    $this->drupalLogin($user);
-+    $this->drupalGet(Url::fromRoute('pwbi_purge.settings'));
-+    $assert_session->statusCodeEquals(200);
-+    $assert_session->fieldExists('cron_window')->setValue(500);
-+    $assert_session->buttonExists('Save configuration')->press();
-+    $assert_session->statusMessageContains('The configuration options have been saved.', 'status');
-+    $this->drupalGet(Url::fromRoute('pwbi_purge.settings'));
-+    $assert_session->fieldValueEquals('cron_window', 500);
-+
-+    self::assertEquals(500, $this->config('pwbi_purge.settings')->get('cron_window'));
-+  }
-+
-+}
-diff --git a/modules/pwbi_purge/tests/src/Kernel/PowerBiEmbedPurgeFormatterTest.php b/modules/pwbi_purge/tests/src/Kernel/PowerBiEmbedPurgeFormatterTest.php
-new file mode 100644
-index 0000000..e66dc8b
---- /dev/null
-+++ b/modules/pwbi_purge/tests/src/Kernel/PowerBiEmbedPurgeFormatterTest.php
-@@ -0,0 +1,142 @@
-+<?php
-+
-+declare(strict_types=1);
-+
-+namespace Drupal\Tests\pwbi_purge\Kernel;
-+
-+use Drupal\Core\CronInterface;
-+use Drupal\purge\Plugin\Purge\Invalidation\TagInvalidation;
-+use Drupal\Tests\pwbi\Kernel\PowerBiEmbedFormatterTest;
-+
-+/**
-+ * @coversDefaultClass \Drupal\pwbi_purge\Plugin\Field\FieldFormatter\PowerBiEmbedPurgeFormatter
-+ */
-+class PowerBiEmbedPurgeFormatterTest extends PowerBiEmbedFormatterTest {
-+
-+  /**
-+   * {@inheritdoc}
-+   */
-+  protected static $modules = [
-+    'purge',
-+    'purge_queuer_coretags',
-+    'pwbi_purge',
-+    'purge_purger_test',
-+  ];
-+
-+  /**
-+   * {@inheritdoc}
-+   */
-+  protected function setUp(): void {
-+    parent::setUp();
-+
-+    $this->installConfig([
-+      'purge',
-+      'purge_queuer_coretags',
-+      'pwbi_purge',
-+    ]);
-+
-+    // Set up a test purger from purge_purger_test that can purge tags.
-+    \Drupal::service('purge.purgers')->setPluginsEnabled(['good' => 'good']);
-+  }
-+
-+  /**
-+   * Override the inherited test with default values.
-+   *
-+   * @covers ::viewElements
-+   */
-+  public function testViewElements(): void {
-+
-+    $fixture = $this->createFixture();
-+    $media = $fixture['media'];
-+    $display = $fixture['display'];
-+
-+    /** @var \Drupal\Core\Entity\Entity\EntityViewDisplay $display */
-+    $build = $display->build($media);
-+    $this->assertNotNull($build['embed']);
-+    $renderer = \Drupal::service('renderer');
-+    $renderer->renderInIsolation($build['embed']);
-+
-+    // The default access token fixture minus the default cron window config.
-+    $expected_max_age = 3599 - 960;
-+    // Field contains the correct cache.
-+    $this->assertSame(
-+      [
-+        'contexts' => [
-+          'languages:language_interface',
-+          'theme',
-+          'user.permissions',
-+        ],
-+        'tags' => [
-+          'pwbi_embed',
-+        ],
-+        'max-age' => $expected_max_age,
-+      ],
-+      $build['embed']['#cache'],
-+    );
-+
-+    $expected_expiration = \Drupal::time()->getRequestTime() + $expected_max_age;
-+    self::assertEquals($expected_expiration, (int) \Drupal::state()->get('pwbi_purge_expiration'));
-+  }
-+
-+  /**
-+   * Override the inherited test with default values.
-+   *
-+   * @covers ::viewElements
-+   */
-+  public function testAccessTokenReset(): void {
-+
-+    $this->config('pwbi_purge.settings')->set('cron_window', 963)->save();
-+    // First value lower than the cron_window, the second is after reset.
-+    \Drupal::state()->set('api_powerbi_com_access_token_expires', [500, 2599]);
-+
-+    $fixture = $this->createFixture();
-+    $media = $fixture['media'];
-+    $display = $fixture['display'];
-+
-+    /** @var \Drupal\Core\Entity\Entity\EntityViewDisplay $display */
-+    $build = $display->build($media);
-+    $this->assertNotNull($build['embed']);
-+    $renderer = \Drupal::service('renderer');
-+    $renderer->renderInIsolation($build['embed']);
-+
-+    // The access token fixture minus the cron window config.
-+    $expected_max_age = 2599 - 963;
-+    // Field contains the correct cache.
-+    $this->assertSame(
-+      [
-+        'contexts' => [
-+          'languages:language_interface',
-+          'theme',
-+          'user.permissions',
-+        ],
-+        'tags' => [
-+          'pwbi_embed',
-+        ],
-+        'max-age' => $expected_max_age,
-+      ],
-+      $build['embed']['#cache'],
-+    );
-+
-+    $expected_expiration = \Drupal::time()->getRequestTime() + $expected_max_age;
-+    self::assertEquals($expected_expiration, (int) \Drupal::state()->get('pwbi_purge_expiration'));
-+  }
-+
-+  /**
-+   * Test that cron purges correctly.
-+   *
-+   * @covers \Drupal\pwbi_purge\Hook\PurgeHooks::purgeOnCron
-+   */
-+  public function testCron(): void {
-+    // Set the expiration to the past.
-+    \Drupal::state()->set('pwbi_purge_expiration', \Drupal::time()->getCurrentTime() - 100);
-+    // Run cron, now the pwbi_embed tag should be purging.
-+    \Drupal::service(CronInterface::class)->run();
-+    // Claim the items.
-+    $claims = \Drupal::service('purge.queue')->claim();
-+    self::assertCount(1, $claims);
-+    $claim = $claims[0];
-+    self::assertInstanceOf(TagInvalidation::class, $claim);
-+    self::assertEquals('pwbi_embed', $claim->getExpression());
-+  }
-+
-+}
 diff --git a/pwbi.permissions.yml b/pwbi.permissions.yml
 index 5cf033e..0c288cd 100644
 --- a/pwbi.permissions.yml
@@ -954,10 +689,10 @@ index 5cf033e..0c288cd 100644
 +  title: 'Request Power BI embed tokens'
 +  description: 'Allows the token refresh endpoint to issue embed tokens. Grant to roles that can view embedded Power BI reports.'
 diff --git a/pwbi.routing.yml b/pwbi.routing.yml
-index 020547c..c867faa 100644
+index 020547c..9bfb414 100644
 --- a/pwbi.routing.yml
 +++ b/pwbi.routing.yml
-@@ -21,3 +21,14 @@ pwbi.embed_settings:
+@@ -21,3 +21,13 @@ pwbi.embed_settings:
      _title: 'PowerBi Embed Settings'
    requirements:
      _permission: 'configure pwbi'
@@ -969,7 +704,6 @@ index 020547c..c867faa 100644
 +    _title: 'Power BI token refresh'
 +  requirements:
 +    _permission: 'view pwbi embed token'
-+    _csrf_token: 'TRUE'
 +    workspace_id: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
 +    report_id: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
 diff --git a/pwbi.services.yml b/pwbi.services.yml
@@ -1874,7 +1608,7 @@ index 0000000..b177bf8
 +
 +}
 diff --git a/src/Form/PowerBiEmbedConfigForm.php b/src/Form/PowerBiEmbedConfigForm.php
-index 5c2b2e7..a6eb2fb 100644
+index 5c2b2e7..eb12a1a 100644
 --- a/src/Form/PowerBiEmbedConfigForm.php
 +++ b/src/Form/PowerBiEmbedConfigForm.php
 @@ -4,19 +4,25 @@ declare(strict_types=1);
@@ -1936,7 +1670,7 @@ index 5c2b2e7..a6eb2fb 100644
     */
    public function getFormId(): string {
      return 'pwbi_settings';
-@@ -46,34 +54,124 @@ class PowerBiEmbedConfigForm extends FormBase {
+@@ -46,34 +54,108 @@ class PowerBiEmbedConfigForm extends FormBase {
     * {@inheritdoc}
     */
    public function buildForm(array $form, FormStateInterface $form_state): array {
@@ -1984,31 +1718,17 @@ index 5c2b2e7..a6eb2fb 100644
 +      '#states' => [
 +        'visible' => [':input[name="token_refresh_enabled"]' => ['checked' => TRUE]],
 +      ],
-+    ];
-+
-+    $form['debug_enabled'] = [
-+      '#type' => 'checkbox',
-+      '#title' => $this->t('Enable debug logging'),
-+      '#default_value' => $pwbi_settings->get('debug_enabled') ?? FALSE,
-+      '#description' => $this->t('Log token refresh activity to the browser console and Drupal watchdog. Disable in production.'),
      ];
 -    $form['actions']['submit'] = [
 -      '#type' => 'submit',
 -      '#value' => $this->t('Submit'),
 -      '#button_type' => 'primary',
 +
-+    $form['block_subscribe_heartbeat'] = [
++    $form['debug_enabled'] = [
 +      '#type' => 'checkbox',
-+      '#title' => $this->t('Suppress subscribe heartbeat errors'),
-+      '#default_value' => $pwbi_settings->get('block_subscribe_heartbeat') ?? FALSE,
-+      '#description' => $this->t('Intercepts the Power BI SDK\'s periodic /subscribe requests and returns a mock 200, eliminating console 405 errors. Safe to enable when reports use scheduled refresh rather than streaming/push datasets.'),
-+    ];
-+
-+    $form['block_telemetry'] = [
-+      '#type' => 'checkbox',
-+      '#title' => $this->t('Block telemetry tracking requests'),
-+      '#default_value' => $pwbi_settings->get('block_telemetry') ?? FALSE,
-+      '#description' => $this->t('Intercepts the Power BI SDK\'s /v2/track telemetry calls and returns a mock 200, preventing usage data from being sent to Microsoft. Enable if outbound telemetry is prohibited by your organization\'s policy.'),
++      '#title' => $this->t('Enable debug logging'),
++      '#default_value' => $pwbi_settings->get('debug_enabled') ?? FALSE,
++      '#description' => $this->t('Log token refresh activity to the browser console and Drupal watchdog. Disable in production.'),
      ];
 +
      return $form;
@@ -2056,8 +1776,6 @@ index 5c2b2e7..a6eb2fb 100644
 +      ->set('token_refresh_enabled', (bool) $form_state->getValue('token_refresh_enabled'))
 +      ->set('token_refresh_minutes', (int) $form_state->getValue('token_refresh_minutes'))
 +      ->set('debug_enabled', (bool) $form_state->getValue('debug_enabled'))
-+      ->set('block_subscribe_heartbeat', (bool) $form_state->getValue('block_subscribe_heartbeat'))
-+      ->set('block_telemetry', (bool) $form_state->getValue('block_telemetry'))
 +      ->save();
 +
 +    // Clear the cached Service Principal OAuth2 token when the cloud endpoint
@@ -2074,27 +1792,25 @@ index 5c2b2e7..a6eb2fb 100644
  
  }
 diff --git a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php b/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
-index 0876f69..6bcd0da 100644
+index 0876f69..9bbe37b 100644
 --- a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
 +++ b/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
-@@ -5,6 +5,10 @@ declare(strict_types=1);
+@@ -5,6 +5,9 @@ declare(strict_types=1);
  namespace Drupal\pwbi\Plugin\Field\FieldFormatter;
  
  use Drupal\breakpoint\BreakpointManager;
 +use Drupal\Component\Datetime\TimeInterface;
-+use Drupal\Core\Access\CsrfTokenGenerator;
 +use Drupal\Core\Config\ConfigFactoryInterface;
 +use Drupal\Core\Config\ImmutableConfig;
  use Drupal\Core\Datetime\DrupalDateTime;
  use Drupal\Core\Field\FieldDefinitionInterface;
  use Drupal\Core\Field\FieldItemListInterface;
-@@ -42,12 +46,15 @@ class PowerBiEmbedFormatter extends FormatterBase {
+@@ -42,12 +45,14 @@ class PowerBiEmbedFormatter extends FormatterBase {
      protected PowerBiEmbed $pwbiEmbed,
      protected BreakpointManager $breakpointManager,
      protected EventDispatcherInterface $dispatcher,
 +    protected TimeInterface $time,
 +    protected readonly ConfigFactoryInterface $configFactory,
-+    protected readonly CsrfTokenGenerator $csrfToken,
    ) {
      parent::__construct($plugin_id, $plugin_definition, $field_definition, $settings, $label, $view_mode, $third_party_settings);
    }
@@ -2105,17 +1821,16 @@ index 0876f69..6bcd0da 100644
     */
    public static function create(ContainerInterface $container, array $configuration, $plugin_id, $plugin_definition): static {
      // @phpstan-ignore-next-line
-@@ -62,6 +69,9 @@ class PowerBiEmbedFormatter extends FormatterBase {
+@@ -62,6 +67,8 @@ class PowerBiEmbedFormatter extends FormatterBase {
        $container->get('pwbi_embed.embed'),
        $container->get('breakpoint.manager'),
        $container->get('event_dispatcher'),
 +      $container->get('datetime.time'),
 +      $container->get('config.factory'),
-+      $container->get('csrf_token'),
      );
    }
  
-@@ -76,6 +86,12 @@ class PowerBiEmbedFormatter extends FormatterBase {
+@@ -76,6 +83,12 @@ class PowerBiEmbedFormatter extends FormatterBase {
      $this->dispatcher->dispatch($overlays_event, PwbiEmbedOverlaysEvent::PWBI_OVERLAYS);
      $overlay_top = $overlays_event->overlay_top ?? [];
      $overlay_blocking = $overlays_event->overlay_blocking ?? [];
@@ -2128,7 +1843,7 @@ index 0876f69..6bcd0da 100644
      foreach ($items as $item) {
        $report_id = $item->getValue()['report_id'];
        $workspace = $item->getValue()['workspace_id'];
-@@ -84,16 +100,30 @@ class PowerBiEmbedFormatter extends FormatterBase {
+@@ -84,16 +97,30 @@ class PowerBiEmbedFormatter extends FormatterBase {
        $report_height_units = $item->getValue()['report_height_units'];
        $report_width_units = $item->getValue()['report_width_units'];
        $report_configuration = $this->pwbiEmbed->getEmbedDataFromApi($workspace, $report_id);
@@ -2163,7 +1878,7 @@ index 0876f69..6bcd0da 100644
          ],
          '#type' => 'component',
          '#component' => 'pwbi:pwbi-embed',
-@@ -108,7 +138,7 @@ class PowerBiEmbedFormatter extends FormatterBase {
+@@ -108,7 +135,7 @@ class PowerBiEmbedFormatter extends FormatterBase {
          '#attached' => [
            'drupalSettings' => [
              'pwbi_embed' => [
@@ -2172,7 +1887,7 @@ index 0876f69..6bcd0da 100644
              ],
              'language' => $langcode,
            ],
-@@ -175,20 +205,48 @@ class PowerBiEmbedFormatter extends FormatterBase {
+@@ -175,20 +202,31 @@ class PowerBiEmbedFormatter extends FormatterBase {
     * @return array <mixed>
     *   The options that will be used to embed a powerbi report.
     */
@@ -2201,32 +1916,15 @@ index 0876f69..6bcd0da 100644
        if (empty($embedOption)) {
 -        unset($embed_pptions[$key]);
 +        unset($embed_options[$key]);
-+      }
-+    }
+       }
+     }
+-    return $embed_pptions;
 +
 +    // Set boolean/int config after the empty() cleanup loop since empty(FALSE)
 +    // and empty(0) are truthy and would strip these values if set beforehand.
 +    $embed_options['token_refresh_enabled'] = (bool) ($pwbi_settings->get('token_refresh_enabled') ?? FALSE);
 +    $embed_options['token_refresh_minutes'] = (int) ($pwbi_settings->get('token_refresh_minutes') ?? 10);
 +    $embed_options['debug_enabled'] = (bool) ($pwbi_settings->get('debug_enabled') ?? FALSE);
-+    $embed_options['block_subscribe_heartbeat'] = (bool) ($pwbi_settings->get('block_subscribe_heartbeat') ?? FALSE);
-+    $embed_options['block_telemetry'] = (bool) ($pwbi_settings->get('block_telemetry') ?? FALSE);
-+
-+    // Generate a per-session CSRF token for the token refresh endpoint.
-+    // The route has _csrf_token: TRUE, so the JS must append ?token=... to
-+    // each refresh request. The token is session-specific; render caches for
-+    // refresh-enabled embeds already have max-age:0 so stale tokens can't
-+    // be served to a different user from cache.
-+    if ($embed_options['token_refresh_enabled']) {
-+      $workspace = $embed_options['workspaceId'] ?? '';
-+      $report = $embed_options['id'] ?? '';
-+      if ($workspace && $report) {
-+        $embed_options['token_refresh_csrf'] = $this->csrfToken->get(
-+          "pwbi/token-refresh/{$workspace}/{$report}"
-+        );
-       }
-     }
--    return $embed_pptions;
 +
 +    return $embed_options;
    }
@@ -2459,267 +2157,3 @@ index e49c1bb..3303bae 100644
    }
  
  }
-diff --git a/tests/modules/pwbi_settings_override_test/pwbi_settings_override_test.info.yml b/tests/modules/pwbi_settings_override_test/pwbi_settings_override_test.info.yml
-new file mode 100644
-index 0000000..a499663
---- /dev/null
-+++ b/tests/modules/pwbi_settings_override_test/pwbi_settings_override_test.info.yml
-@@ -0,0 +1,7 @@
-+name: Power BI Settings Override Test
-+type: module
-+description: Testing module that overrides Power BI oauth2 client settings.
-+core_version_requirement: ^10 || ^11
-+package: Testing
-+dependencies:
-+  - pwbi:pwbi
-diff --git a/tests/modules/pwbi_settings_override_test/pwbi_settings_override_test.services.yml b/tests/modules/pwbi_settings_override_test/pwbi_settings_override_test.services.yml
-new file mode 100644
-index 0000000..77ab1bc
---- /dev/null
-+++ b/tests/modules/pwbi_settings_override_test/pwbi_settings_override_test.services.yml
-@@ -0,0 +1,8 @@
-+services:
-+  pwbi_settings_override_test.config_override:
-+    class: Drupal\pwbi_settings_override_test\PwbiSettingsOverrideConfigFactoryOverride
-+    arguments:
-+      - '@module_handler'
-+      - '@state'
-+    tags:
-+      - { name: config.factory.override }
-diff --git a/tests/modules/pwbi_settings_override_test/src/PwbiSettingsOverrideConfigFactoryOverride.php b/tests/modules/pwbi_settings_override_test/src/PwbiSettingsOverrideConfigFactoryOverride.php
-new file mode 100644
-index 0000000..ce03e2e
---- /dev/null
-+++ b/tests/modules/pwbi_settings_override_test/src/PwbiSettingsOverrideConfigFactoryOverride.php
-@@ -0,0 +1,91 @@
-+<?php
-+
-+declare(strict_types=1);
-+
-+namespace Drupal\pwbi_settings_override_test;
-+
-+use Drupal\Core\Cache\CacheableMetadata;
-+use Drupal\Core\Config\ConfigFactoryOverrideInterface;
-+use Drupal\Core\Config\StorageInterface;
-+use Drupal\Core\Extension\ModuleHandlerInterface;
-+use Drupal\Core\State\StateInterface;
-+
-+/**
-+ * Provides test-only config overrides for Power BI oauth credentials.
-+ */
-+class PwbiSettingsOverrideConfigFactoryOverride implements ConfigFactoryOverrideInterface {
-+
-+  /**
-+   * Target oauth2 client config name.
-+   */
-+  private const OAUTH_CONFIG = 'oauth2_client.oauth2_client.pwbi_service_principal';
-+
-+  /**
-+   * State key used by tests to override default override values.
-+   */
-+  public const STATE_KEY = 'pwbi_settings_override_test.config_values';
-+
-+  /**
-+   * Constructs the override service.
-+   */
-+  public function __construct(
-+    private readonly ModuleHandlerInterface $moduleHandler,
-+    private readonly StateInterface $state,
-+  ) {
-+  }
-+
-+  /**
-+   * {@inheritdoc}
-+   */
-+  public function loadOverrides($names): array {
-+    if (!in_array(self::OAUTH_CONFIG, $names, TRUE)) {
-+      return [];
-+    }
-+
-+    $cert_file = DRUPAL_ROOT . '/' . $this->moduleHandler->getModule('pwbi')->getPath() . '/tests/mock_cert_file.pem';
-+
-+    $overrides = [
-+      self::OAUTH_CONFIG => [
-+        'client_id' => 'override-client-id',
-+        'client_secret' => 'override-client-secret',
-+        'third_party_settings' => [
-+          'pwbi' => [
-+            'tenant' => 'override-settings-tenant',
-+            'client_id' => 'override-settings-client-id',
-+            'client_secret' => 'override-settings-client-secret',
-+            'cert_file' => $cert_file,
-+          ],
-+        ],
-+      ],
-+    ];
-+
-+    $runtime_overrides = $this->state->get(self::STATE_KEY, []);
-+    if (is_array($runtime_overrides) && $runtime_overrides !== []) {
-+      $overrides[self::OAUTH_CONFIG]['third_party_settings'] = $runtime_overrides['third_party_settings'];
-+    }
-+
-+    return $overrides;
-+  }
-+
-+  /**
-+   * {@inheritdoc}
-+   */
-+  public function getCacheSuffix(): string {
-+    return 'PwbiSettingsOverrideTestConfigFactoryOverride';
-+  }
-+
-+  /**
-+   * {@inheritdoc}
-+   */
-+  public function createConfigObject($name, $collection = StorageInterface::DEFAULT_COLLECTION) {
-+    return NULL;
-+  }
-+
-+  /**
-+   * {@inheritdoc}
-+   */
-+  public function getCacheableMetadata($name) {
-+    return new CacheableMetadata();
-+  }
-+
-+}
-diff --git a/tests/src/Kernel/SettingsOverrideTest.php b/tests/src/Kernel/SettingsOverrideTest.php
-new file mode 100644
-index 0000000..ff28463
---- /dev/null
-+++ b/tests/src/Kernel/SettingsOverrideTest.php
-@@ -0,0 +1,134 @@
-+<?php
-+
-+declare(strict_types=1);
-+
-+namespace Drupal\Tests\pwbi\Kernel;
-+
-+use Drupal\KernelTests\KernelTestBase;
-+use TheNetworg\OAuth2\Client\Provider\Azure;
-+
-+/**
-+ * Ensure credentials/certificate can be provided via settings.php overrides.
-+ */
-+class SettingsOverrideTest extends KernelTestBase {
-+
-+  /**
-+   * {@inheritdoc}
-+   */
-+  protected static $modules = [
-+    'oauth2_client',
-+    'pwbi',
-+  ];
-+
-+  /**
-+   * {@inheritdoc}
-+   */
-+  protected function setUp(): void {
-+    parent::setUp();
-+    $this->installEntitySchema('oauth2_client');
-+  }
-+
-+  /**
-+   * Test credentials resolved from configuration overrides.
-+   */
-+  public function testSettingsCredentialsAreUsed(): void {
-+    $module_installer = \Drupal::service('module_installer');
-+    $certPath = $this->copyCertToTemp();
-+
-+    $storage = \Drupal::entityTypeManager()->getStorage('oauth2_client');
-+    /** @var \Drupal\oauth2_client\Entity\Oauth2Client $entity */
-+    $entity = $storage->create([
-+      'label' => 'Power Bi service principal auth',
-+      'id' => 'pwbi_service_principal',
-+      'oauth2_client_plugin_id' => 'pwbi_service_principal',
-+      'status' => 1,
-+      'credential_provider' => 'settings',
-+      'credential_storage_key' => '',
-+      'third_party_settings' => [
-+        'pwbi' => [
-+          'tenant' => 'settings-tenant',
-+          'client_id' => 'settings-client-id',
-+          'client_secret' => 'settings-client-secret',
-+          'use_cert' => 1,
-+          'cert_file' => $certPath,
-+        ],
-+      ],
-+    ]);
-+    $entity->set('credential_storage_key', $entity->uuid());
-+    $entity->save();
-+
-+    /** @var \Drupal\pwbi\Plugin\Oauth2Client\PwbiServicePrincipal $client */
-+    $client = \Drupal::service('oauth2_client.service')->getClient('pwbi_service_principal');
-+
-+    $this->assertEquals('settings-client-id', $client->getClientId());
-+    $this->assertEquals('settings-client-secret', $client->getClientSecret());
-+    $this->assertEquals('settings-tenant', $client->getTenant());
-+    $this->assertTrue($client->useCertificate());
-+    $this->assertEquals($certPath, $client->getCertificateFilePath());
-+
-+    $provider = $client->getProvider();
-+    $this->assertInstanceOf(Azure::class, $provider);
-+
-+    // Test overriding all credentials.
-+    $module_installer->install(['pwbi_settings_override_test']);
-+
-+    /** @var \Drupal\pwbi\Plugin\Oauth2Client\PwbiServicePrincipal $client */
-+    $client = \Drupal::service('oauth2_client.service')->getClient('pwbi_service_principal');
-+    $pwbi_path = \Drupal::service('module_handler')->getModule('pwbi')->getPath();
-+    $cert_file = DRUPAL_ROOT . '/' . $pwbi_path . '/tests/mock_cert_file.pem';
-+
-+    $this->assertEquals('override-settings-client-id', $client->getClientId());
-+    $this->assertEquals('override-settings-client-secret', $client->getClientSecret());
-+    $this->assertEquals('override-settings-tenant', $client->getTenant());
-+    $this->assertEquals($cert_file, $client->getCertificateFilePath());
-+
-+    // Test overriding the client_id.
-+    $module_installer->uninstall(['pwbi_settings_override_test']);
-+    \Drupal::state()->set('pwbi_settings_override_test.config_values', [
-+      'third_party_settings' => [
-+        'pwbi' => [
-+          'client_id' => 'runtime-settings-client-id',
-+        ],
-+      ],
-+    ]);
-+    $module_installer->install(['pwbi_settings_override_test']);
-+    /** @var \Drupal\pwbi\Plugin\Oauth2Client\PwbiServicePrincipal $client */
-+    $client = \Drupal::service('oauth2_client.service')->getClient('pwbi_service_principal');
-+
-+    $this->assertEquals('runtime-settings-client-id', $client->getClientId());
-+    $this->assertEquals('settings-client-secret', $client->getClientSecret());
-+    $this->assertEquals('settings-tenant', $client->getTenant());
-+    $this->assertTrue($client->useCertificate());
-+    $this->assertEquals($certPath, $client->getCertificateFilePath());
-+
-+    // Test overriding the client_secret.
-+    $module_installer->uninstall(['pwbi_settings_override_test']);
-+    \Drupal::state()->set('pwbi_settings_override_test.config_values', [
-+      'third_party_settings' => [
-+        'pwbi' => [
-+          'client_secret' => 'runtime-settings-client-secret',
-+        ],
-+      ],
-+    ]);
-+    $module_installer->install(['pwbi_settings_override_test']);
-+    /** @var \Drupal\pwbi\Plugin\Oauth2Client\PwbiServicePrincipal $client */
-+    $client = \Drupal::service('oauth2_client.service')->getClient('pwbi_service_principal');
-+
-+    $this->assertEquals('settings-client-id', $client->getClientId());
-+    $this->assertEquals('runtime-settings-client-secret', $client->getClientSecret());
-+    $this->assertEquals('settings-tenant', $client->getTenant());
-+    $this->assertTrue($client->useCertificate());
-+    $this->assertEquals($certPath, $client->getCertificateFilePath());
-+  }
-+
-+  /**
-+   * Copy test certificate to a temp location.
-+   */
-+  private function copyCertToTemp(): string {
-+    $source = \Drupal::service('module_handler')->getModule('pwbi')->getPath() . '/tests/mock_cert_file.pem';
-+    $target = sys_get_temp_dir() . '/pwbi_settings_cert.pem';
-+    file_put_contents($target, file_get_contents($source));
-+    return $target;
-+  }
-+
-+}
