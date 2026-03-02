@@ -1754,6 +1754,21 @@ index 0000000..ee9f46c
 +  }
 +
 +}
+diff --git a/src/Plugin/Oauth2Client/PwbiServicePrincipal.php b/src/Plugin/Oauth2Client/PwbiServicePrincipal.php
+index 2b17ed0..dd8041c 100644
+--- a/src/Plugin/Oauth2Client/PwbiServicePrincipal.php
++++ b/src/Plugin/Oauth2Client/PwbiServicePrincipal.php
+@@ -22,8 +22,8 @@ use TheNetworg\OAuth2\Client\Provider\Azure;
+  *   label = @Translation("Power Bi service principal"),
+  *   authorization_uri = "https://login.microsoftonline.com/%s/oauth2/v2.0/authorize/",
+  *   token_uri = "https://login.windows.net/%s/oauth2/v2.0/token/",
+- *   resource_owner_uri = "https://analysis.windows.net/powerbi/api",
+- *   source = "https://analysis.windows.net/powerbi/api/.default",
++ *   resource_owner_uri = "https://analysis.usgovcloudapi.net/powerbi/api",
++ *   source = "https://analysis.usgovcloudapi.net/powerbi/api/.default",
+  * )
+  */
+ class PwbiServicePrincipal extends Oauth2ClientPluginBase {
 diff --git a/src/PowerBiEmbed.php b/src/PowerBiEmbed.php
 index e49c1bb..d4139c2 100644
 --- a/src/PowerBiEmbed.php
