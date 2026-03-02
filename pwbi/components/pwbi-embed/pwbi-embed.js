@@ -20,7 +20,8 @@
     const currentTime = Date.now();
     const expiration = Date.parse(embedSettings.tokenExpiration);
     const timeUntilExpiration = expiration - currentTime;
-    const timeToUpdate = MINUTES_BEFORE_EXPIRATION * 60 * 1000;
+    const minutesBefore = embedSettings.token_refresh_minutes ?? MINUTES_BEFORE_EXPIRATION;
+    const timeToUpdate = minutesBefore * 60 * 1000;
 
     if (timeUntilExpiration <= timeToUpdate) {
       console.log('[pwbi] Token expiring soon, refreshing...');

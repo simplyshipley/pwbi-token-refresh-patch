@@ -1,3 +1,7 @@
 configure pwbi:
   title: 'Administer PowerBi configuration'
   restrict access: true
+
+view pwbi embed token:
+  title: 'Request Power BI embed tokens'
+  description: 'Allows the token refresh endpoint to issue embed tokens. Grant to roles that can view embedded Power BI reports.'
