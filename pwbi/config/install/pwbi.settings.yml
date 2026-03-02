@@ -1,3 +1,4 @@
 pwbi_api_endpoint: 'https://api.powerbi.com'
 token_refresh_enabled: false
 token_refresh_minutes: 10
+debug_enabled: false

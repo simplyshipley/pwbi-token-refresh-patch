@@ -99,6 +99,13 @@ class PowerBiEmbedConfigForm extends ConfigFormBase {
       ],
     ];
 
+    $form['debug_enabled'] = [
+      '#type' => 'checkbox',
+      '#title' => $this->t('Enable debug logging'),
+      '#default_value' => $pwbi_settings->get('debug_enabled') ?? FALSE,
+      '#description' => $this->t('Log token refresh activity to the browser console and Drupal watchdog. Disable in production.'),
+    ];
+
     return $form;
   }
 
@@ -131,6 +138,7 @@ class PowerBiEmbedConfigForm extends ConfigFormBase {
       ->set('pwbi_api_endpoint', $new_endpoint)
       ->set('token_refresh_enabled', (bool) $form_state->getValue('token_refresh_enabled'))
       ->set('token_refresh_minutes', (int) $form_state->getValue('token_refresh_minutes'))
+      ->set('debug_enabled', (bool) $form_state->getValue('debug_enabled'))
       ->save();
 
     // Clear the cached Service Principal OAuth2 token when the cloud endpoint

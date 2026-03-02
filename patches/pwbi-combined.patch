@@ -20,10 +20,10 @@ index 0000000..64d9f8d
 +overriden
 +Çads
 diff --git a/components/pwbi-embed/pwbi-embed.js b/components/pwbi-embed/pwbi-embed.js
-index fd784bc..de0ba8f 100644
+index fd784bc..c27224f 100644
 --- a/components/pwbi-embed/pwbi-embed.js
 +++ b/components/pwbi-embed/pwbi-embed.js
-@@ -1,21 +1,89 @@
+@@ -1,21 +1,110 @@
  ((Drupal) => {
 +  // Minutes before token expiration to trigger a refresh.
 +  const MINUTES_BEFORE_EXPIRATION = 10;
@@ -48,9 +48,19 @@ index fd784bc..de0ba8f 100644
 +    const timeUntilExpiration = expiration - currentTime;
 +    const minutesBefore = embedSettings.token_refresh_minutes ?? MINUTES_BEFORE_EXPIRATION;
 +    const timeToUpdate = minutesBefore * 60 * 1000;
++    const minutesLeft = Math.round(timeUntilExpiration / 60000);
++
++    if (embedSettings.debug_enabled) {
++      console.log(
++        `[pwbi] Token check — expires: ${embedSettings.tokenExpiration}, ` +
++        `~${minutesLeft}min left, refresh window: ${minutesBefore}min`
++      );
++    }
 +
 +    if (timeUntilExpiration <= timeToUpdate) {
-+      console.log('[pwbi] Token expiring soon, refreshing...');
++      if (embedSettings.debug_enabled) {
++        console.log('[pwbi] Token expiring soon, refreshing...');
++      }
 +      updateToken(embedSettings, report);
 +    }
 +  }
@@ -67,6 +77,12 @@ index fd784bc..de0ba8f 100644
 +   * @param {object} report - The Report object returned by powerbiClient.load().
 +   */
 +  async function updateToken(embedSettings, report) {
++    // Prevent a second refresh launching while one is already in flight.
++    if (embedSettings._refreshing) {
++      return;
++    }
++    embedSettings._refreshing = true;
++
 +    const { workspaceId, id: reportId, datasetId } = embedSettings;
 +    const base = drupalSettings.path.baseUrl;
 +    const refreshUrl = `${base}pwbi/token-refresh/${workspaceId}/${reportId}?dataset_id=${encodeURIComponent(datasetId)}`;
@@ -93,10 +109,15 @@ index fd784bc..de0ba8f 100644
 +      // Apply the new token directly to the report reference we already hold.
 +      await report.setAccessToken(data.token);
 +
-+      console.log('[pwbi] Token refreshed. New expiration:', data.expiration);
++      if (embedSettings.debug_enabled) {
++        console.log('[pwbi] Token refreshed. New expiration:', data.expiration);
++      }
 +    }
 +    catch (err) {
 +      console.error('[pwbi] Token refresh failed', err);
++    }
++    finally {
++      embedSettings._refreshing = false;
 +    }
 +  }
 +
@@ -126,7 +147,7 @@ index fd784bc..de0ba8f 100644
            return;
          }
  
-@@ -23,6 +91,7 @@
+@@ -23,6 +112,7 @@
          if (embedConfiguration.settings === undefined) {
            embedConfiguration.settings = {};
          }
@@ -134,7 +155,7 @@ index fd784bc..de0ba8f 100644
          // Get a reference to the HTML element that contains the embedded report.
          const powerBiEmbedParams = {
            embedConfiguration,
-@@ -33,37 +102,59 @@
+@@ -33,37 +123,59 @@
            detail: powerBiEmbedParams,
          });
          window.dispatchEvent(PowerBiPreEmbed);
@@ -204,7 +225,7 @@ index fd784bc..de0ba8f 100644
          }
        });
        document.dispatchEvent(blockEmbedEvent);
-@@ -75,7 +166,7 @@
+@@ -75,7 +187,7 @@
        if (!settings.pwbi_flag) {
          const waitForGlobal = function (key, settings) {
            if (window[key]) {
@@ -213,7 +234,7 @@ index fd784bc..de0ba8f 100644
            } else {
              setTimeout(function () {
                waitForGlobal(key, settings);
-@@ -83,7 +174,7 @@
+@@ -83,7 +195,7 @@
            }
          };
          settings.pwbi_flag = true;
@@ -224,15 +245,16 @@ index fd784bc..de0ba8f 100644
      detach() {},
 diff --git a/config/install/pwbi.settings.yml b/config/install/pwbi.settings.yml
 new file mode 100644
-index 0000000..48fbd42
+index 0000000..303aeb9
 --- /dev/null
 +++ b/config/install/pwbi.settings.yml
-@@ -0,0 +1,3 @@
+@@ -0,0 +1,4 @@
 +pwbi_api_endpoint: 'https://api.powerbi.com'
 +token_refresh_enabled: false
 +token_refresh_minutes: 10
++debug_enabled: false
 diff --git a/config/schema/pwbi.schema.yml b/config/schema/pwbi.schema.yml
-index 6397c5b..f8ad781 100644
+index 6397c5b..778d4bc 100644
 --- a/config/schema/pwbi.schema.yml
 +++ b/config/schema/pwbi.schema.yml
 @@ -5,6 +5,12 @@ oauth2_client.oauth2_client.*.third_party.pwbi:
@@ -248,7 +270,7 @@ index 6397c5b..f8ad781 100644
      use_cert:
        type: string
        label: Use certificate
-@@ -20,6 +26,20 @@ pwbi_embed.embed:
+@@ -20,6 +26,23 @@ pwbi_embed.embed:
        type: string
        label: PowerBi Workspaces
  
@@ -265,16 +287,19 @@ index 6397c5b..f8ad781 100644
 +    token_refresh_minutes:
 +      type: integer
 +      label: Minutes before expiry to refresh
++    debug_enabled:
++      type: boolean
++      label: Enable debug logging
 +
  media.source.pwbi_embed_visual:
    type: media.source.field_aware
    label: '"PWBI Embed" media source configuration'
 diff --git a/drush.services.yml b/drush.services.yml
 new file mode 100644
-index 0000000..ba77257
+index 0000000..144d2df
 --- /dev/null
 +++ b/drush.services.yml
-@@ -0,0 +1,12 @@
+@@ -0,0 +1,13 @@
 +services:
 +  pwbi.commands:
 +    class: Drupal\pwbi\Commands\PwbiCommands
@@ -285,6 +310,7 @@ index 0000000..ba77257
 +      - '@entity_field.manager'
 +      - '@state'
 +      - '@keyvalue'
++      - '@config.factory'
 +    tags:
 +      - { name: drush.command }
 diff --git a/modules/pwbi_purge/config/install/pwbi_purge.settings.yml b/modules/pwbi_purge/config/install/pwbi_purge.settings.yml
@@ -1078,10 +1104,10 @@ index 34987a1..72f2523 100644
  
 diff --git a/src/Commands/PwbiCommands.php b/src/Commands/PwbiCommands.php
 new file mode 100644
-index 0000000..ac66a0b
+index 0000000..7d9b94c
 --- /dev/null
 +++ b/src/Commands/PwbiCommands.php
-@@ -0,0 +1,462 @@
+@@ -0,0 +1,537 @@
 +<?php
 +
 +declare(strict_types=1);
@@ -1089,6 +1115,7 @@ index 0000000..ac66a0b
 +namespace Drupal\pwbi\Commands;
 +
 +use Drupal\Component\Serialization\Json;
++use Drupal\Core\Config\ConfigFactoryInterface;
 +use Drupal\Core\Entity\EntityFieldManagerInterface;
 +use Drupal\Core\Entity\EntityTypeManagerInterface;
 +use Drupal\Core\KeyValueStore\KeyValueFactoryInterface;
@@ -1111,6 +1138,20 @@ index 0000000..ac66a0b
 + */
 +class PwbiCommands extends DrushCommands {
 +
++  /**
++   * Maps configured API endpoint URLs to their expected OAuth2 audience (aud).
++   *
++   * When the cached token's `aud` claim doesn't match this map for the
++   * configured endpoint, the token was issued for the wrong cloud environment
++   * and API calls will fail with 401 Unauthorized.
++   */
++  private const ENDPOINT_AUDIENCE_MAP = [
++    'https://api.powerbi.com'          => 'https://analysis.windows.net/powerbi/api',
++    'https://api.powerbigov.us'        => 'https://analysis.usgovcloudapi.net/powerbi/api',
++    'https://api.high.powerbigov.us'   => 'https://analysis.usgovcloudapi.net/powerbi/api',
++    'https://api.mil.powerbigov.us'    => 'https://analysis.usgovcloudapi.net/powerbi/api',
++  ];
++
 +  public function __construct(
 +    protected readonly PowerBiClient $pwbiClient,
 +    protected readonly Oauth2ClientService $auth,
@@ -1118,6 +1159,7 @@ index 0000000..ac66a0b
 +    protected readonly EntityFieldManagerInterface $entityFieldManager,
 +    protected readonly StateInterface $state,
 +    protected readonly KeyValueFactoryInterface $keyValueFactory,
++    protected readonly ConfigFactoryInterface $configFactory,
 +  ) {
 +    parent::__construct();
 +  }
@@ -1134,6 +1176,7 @@ index 0000000..ac66a0b
 +      $container->get('entity_field.manager'),
 +      $container->get('state'),
 +      $container->get('keyvalue'),
++      $container->get('config.factory'),
 +    );
 +  }
 +
@@ -1177,10 +1220,17 @@ index 0000000..ac66a0b
 +      : 'not reported';
 +    $expired = $token->hasExpired();
 +
-+    // Decode the JWT payload to verify the OAuth audience (scope).
-+    // GCC requires 'analysis.usgovcloudapi.net'; commercial uses 'analysis.windows.net'.
++    // Decode the JWT payload to verify the OAuth audience matches the
++    // configured cloud endpoint. A mismatch means the cached token was issued
++    // for the wrong environment (e.g. commercial token used against GCC API).
++    $configuredEndpoint = $this->configFactory->get('pwbi.settings')->get('pwbi_api_endpoint')
++      ?? 'https://api.powerbi.com';
++    $expectedAudience = self::ENDPOINT_AUDIENCE_MAP[$configuredEndpoint]
++      ?? self::ENDPOINT_AUDIENCE_MAP['https://api.powerbi.com'];
++
 +    $audienceLabel = 'not a JWT / could not parse';
-+    $audienceWarning = FALSE;
++    $audienceMismatch = FALSE;
++    $actualAudience = '';
 +    $parts = explode('.', $tokenValue);
 +    if (count($parts) === 3) {
 +      // JWT segments use URL-safe base64 with padding stripped. Re-add padding
@@ -1191,13 +1241,13 @@ index 0000000..ac66a0b
 +      $payloadJson = base64_decode($segment, TRUE);
 +      $payload = ($payloadJson !== FALSE) ? json_decode($payloadJson, TRUE) : NULL;
 +      if (is_array($payload)) {
-+        $audience = (string) ($payload['aud'] ?? 'unknown');
-+        if (str_contains($audience, 'usgovcloudapi.net')) {
-+          $audienceLabel = $audience . ' (GCC — correct)';
++        $actualAudience = (string) ($payload['aud'] ?? 'unknown');
++        if (str_starts_with($actualAudience, $expectedAudience)) {
++          $audienceLabel = $actualAudience . ' ✓ matches configured endpoint';
 +        }
 +        else {
-+          $audienceLabel = $audience . ' WARNING: not GCC scope';
-+          $audienceWarning = TRUE;
++          $audienceLabel = $actualAudience . ' ✗ MISMATCH — expected: ' . $expectedAudience;
++          $audienceMismatch = TRUE;
 +        }
 +      }
 +    }
@@ -1209,17 +1259,28 @@ index 0000000..ac66a0b
 +        ['Token (truncated)', substr($tokenValue, 0, 30) . '...'],
 +        ['Expires', $expiry],
 +        ['Is expired', $expired ? 'YES (cached token is stale)' : 'No'],
-+        ['OAuth audience (aud)', $audienceLabel],
++        ['Configured endpoint', $configuredEndpoint],
++        ['Expected audience', $expectedAudience],
++        ['Token audience (aud)', $audienceLabel],
 +      ],
 +    );
 +
-+    if ($audienceWarning) {
++    if ($audienceMismatch) {
 +      $this->io()->warning([
-+        'The access token audience does not include "usgovcloudapi.net".',
-+        'For GCC deployments the OAuth2 client scope must be:',
-+        '  https://analysis.usgovcloudapi.net/powerbi/api/.default',
-+        'Update the scope at:',
-+        '  Admin → Configuration → Services → OAuth2 Clients → pwbi_service_principal',
++        'The cached token was issued for a different cloud environment.',
++        '',
++        "  Token audience:    {$actualAudience}",
++        "  Expected audience: {$expectedAudience}",
++        "  Configured endpoint: {$configuredEndpoint}",
++        '',
++        'Power BI API calls will fail with 401 Unauthorized until this is fixed.',
++        '',
++        'To fix:',
++        '  1. Run: drush pwbi:flush-token',
++        '  2. Verify the OAuth2 client scope matches your endpoint:',
++        '       Admin → Configuration → Services → OAuth2 Clients → pwbi_service_principal',
++        "       Scope should be: {$expectedAudience}/.default",
++        '  3. Run: drush pwbi:auth-check (to confirm the new token has the correct audience)',
 +      ]);
 +    }
 +  }
@@ -1403,6 +1464,7 @@ index 0000000..ac66a0b
 +        $code = $reportInfo['error']['code'] ?? 'unknown';
 +        $msg  = $reportInfo['error']['message'] ?? 'no message';
 +        $this->io()->error("Power BI API error [{$code}]: {$msg}");
++        $this->maybeHintAudienceMismatch($msg);
 +        return;
 +      }
 +
@@ -1458,6 +1520,7 @@ index 0000000..ac66a0b
 +      $code = $result['error']['code'] ?? 'unknown';
 +      $msg  = $result['error']['message'] ?? 'no message';
 +      $this->io()->error("Power BI embed token error [{$code}]: {$msg}");
++      $this->maybeHintAudienceMismatch($msg);
 +      return;
 +    }
 +
@@ -1479,6 +1542,44 @@ index 0000000..ac66a0b
 +        ['Token ID', $result['tokenId'] ?? 'n/a'],
 +      ],
 +    );
++  }
++
++  /**
++   * Print a hint if an API error message suggests an OAuth2 audience mismatch.
++   *
++   * Power BI returns 401 with error messages containing "audience", "token",
++   * or "unauthorized" when the Bearer token was issued for a different cloud
++   * (e.g. a commercial token used against the GCC API endpoint). This helper
++   * surfaces the fix steps inline so the developer doesn't have to guess.
++   *
++   * @param string $msg
++   *   The error message from the Power BI API response.
++   */
++  protected function maybeHintAudienceMismatch(string $msg): void {
++    $lower = strtolower($msg);
++    if (!str_contains($lower, 'audience') && !str_contains($lower, 'unauthorized') && !str_contains($lower, 'token')) {
++      return;
++    }
++
++    $configuredEndpoint = $this->configFactory->get('pwbi.settings')->get('pwbi_api_endpoint')
++      ?? 'https://api.powerbi.com';
++    $expectedAudience = self::ENDPOINT_AUDIENCE_MAP[$configuredEndpoint]
++      ?? self::ENDPOINT_AUDIENCE_MAP['https://api.powerbi.com'];
++
++    $this->io()->note([
++      'This error may indicate an OAuth2 token audience mismatch.',
++      'The cached token may have been issued for a different cloud environment.',
++      '',
++      "  Configured endpoint: {$configuredEndpoint}",
++      "  Expected audience:   {$expectedAudience}/.default",
++      '',
++      'To fix:',
++      '  1. Run: drush pwbi:flush-token',
++      '  2. Verify the OAuth2 client scope at:',
++      '       Admin → Configuration → Services → OAuth2 Clients → pwbi_service_principal',
++      "       Scope should be: {$expectedAudience}/.default",
++      '  3. Run: drush pwbi:auth-check (confirm new token has the correct audience)',
++    ]);
 +  }
 +
 +  /**
@@ -1546,10 +1647,10 @@ index 0000000..ac66a0b
 +}
 diff --git a/src/Controller/PwbiTokenRefreshController.php b/src/Controller/PwbiTokenRefreshController.php
 new file mode 100644
-index 0000000..ee9f46c
+index 0000000..1ee6731
 --- /dev/null
 +++ b/src/Controller/PwbiTokenRefreshController.php
-@@ -0,0 +1,144 @@
+@@ -0,0 +1,155 @@
 +<?php
 +
 +declare(strict_types=1);
@@ -1648,6 +1749,17 @@ index 0000000..ee9f46c
 +      ]);
 +    }
 +
++    if ($this->config('pwbi.settings')->get('debug_enabled')) {
++      $this->logger('pwbi')->info(
++        'Embed token refreshed for report @report (workspace @workspace), expires @expiry.',
++        [
++          '@report'    => $report_id,
++          '@workspace' => $workspace_id,
++          '@expiry'    => $result['expiration'] ?? 'unknown',
++        ]
++      );
++    }
++
 +    return new JsonResponse([
 +      'token'      => $result['token'],
 +      'expiration' => $result['expiration'],
@@ -1695,7 +1807,7 @@ index 0000000..ee9f46c
 +
 +}
 diff --git a/src/Form/PowerBiEmbedConfigForm.php b/src/Form/PowerBiEmbedConfigForm.php
-index 5c2b2e7..db2c9d2 100644
+index 5c2b2e7..0b0257a 100644
 --- a/src/Form/PowerBiEmbedConfigForm.php
 +++ b/src/Form/PowerBiEmbedConfigForm.php
 @@ -4,19 +4,25 @@ declare(strict_types=1);
@@ -1757,7 +1869,7 @@ index 5c2b2e7..db2c9d2 100644
     */
    public function getFormId(): string {
      return 'pwbi_settings';
-@@ -46,34 +54,95 @@ class PowerBiEmbedConfigForm extends FormBase {
+@@ -46,34 +54,103 @@ class PowerBiEmbedConfigForm extends FormBase {
     * {@inheritdoc}
     */
    public function buildForm(array $form, FormStateInterface $form_state): array {
@@ -1786,11 +1898,7 @@ index 5c2b2e7..db2c9d2 100644
 +        'https://api.mil.powerbigov.us'    => $this->t('US DoD (api.mil.powerbigov.us)'),
 +      ],
 +      '#description' => $this->t('Select the Power BI REST API root for your tenant cloud environment.'),
-     ];
--    $form['actions']['submit'] = [
--      '#type' => 'submit',
--      '#value' => $this->t('Submit'),
--      '#button_type' => 'primary',
++    ];
 +
 +    $form['token_refresh_enabled'] = [
 +      '#type' => 'checkbox',
@@ -1809,6 +1917,17 @@ index 5c2b2e7..db2c9d2 100644
 +      '#states' => [
 +        'visible' => [':input[name="token_refresh_enabled"]' => ['checked' => TRUE]],
 +      ],
+     ];
+-    $form['actions']['submit'] = [
+-      '#type' => 'submit',
+-      '#value' => $this->t('Submit'),
+-      '#button_type' => 'primary',
++
++    $form['debug_enabled'] = [
++      '#type' => 'checkbox',
++      '#title' => $this->t('Enable debug logging'),
++      '#default_value' => $pwbi_settings->get('debug_enabled') ?? FALSE,
++      '#description' => $this->t('Log token refresh activity to the browser console and Drupal watchdog. Disable in production.'),
      ];
 +
      return $form;
@@ -1850,6 +1969,7 @@ index 5c2b2e7..db2c9d2 100644
 +      ->set('pwbi_api_endpoint', $new_endpoint)
 +      ->set('token_refresh_enabled', (bool) $form_state->getValue('token_refresh_enabled'))
 +      ->set('token_refresh_minutes', (int) $form_state->getValue('token_refresh_minutes'))
++      ->set('debug_enabled', (bool) $form_state->getValue('debug_enabled'))
 +      ->save();
 +
 +    // Clear the cached Service Principal OAuth2 token when the cloud endpoint
@@ -1866,7 +1986,7 @@ index 5c2b2e7..db2c9d2 100644
  
  }
 diff --git a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php b/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
-index 0876f69..62fae24 100644
+index 0876f69..9bbe37b 100644
 --- a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
 +++ b/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
 @@ -5,6 +5,9 @@ declare(strict_types=1);
@@ -1961,7 +2081,7 @@ index 0876f69..62fae24 100644
              ],
              'language' => $langcode,
            ],
-@@ -175,20 +202,30 @@ class PowerBiEmbedFormatter extends FormatterBase {
+@@ -175,20 +202,31 @@ class PowerBiEmbedFormatter extends FormatterBase {
     * @return array <mixed>
     *   The options that will be used to embed a powerbi report.
     */
@@ -1994,10 +2114,11 @@ index 0876f69..62fae24 100644
      }
 -    return $embed_pptions;
 +
-+    // Set token refresh config after the empty() cleanup loop since empty(FALSE)
++    // Set boolean/int config after the empty() cleanup loop since empty(FALSE)
 +    // and empty(0) are truthy and would strip these values if set beforehand.
 +    $embed_options['token_refresh_enabled'] = (bool) ($pwbi_settings->get('token_refresh_enabled') ?? FALSE);
 +    $embed_options['token_refresh_minutes'] = (int) ($pwbi_settings->get('token_refresh_minutes') ?? 10);
++    $embed_options['debug_enabled'] = (bool) ($pwbi_settings->get('debug_enabled') ?? FALSE);
 +
 +    return $embed_options;
    }
@@ -2494,63 +2615,3 @@ index 0000000..ff28463
 +  }
 +
 +}
-diff --git a/components/pwbi-embed/pwbi-embed.js b/components/pwbi-embed/pwbi-embed.js
-index de0ba8f..9c880bb 100644
---- a/components/pwbi-embed/pwbi-embed.js
-+++ b/components/pwbi-embed/pwbi-embed.js
-@@ -22,6 +22,12 @@
-     const timeUntilExpiration = expiration - currentTime;
-     const minutesBefore = embedSettings.token_refresh_minutes ?? MINUTES_BEFORE_EXPIRATION;
-     const timeToUpdate = minutesBefore * 60 * 1000;
-+    const minutesLeft = Math.round(timeUntilExpiration / 60000);
-+
-+    console.log(
-+      `[pwbi] Token check — expires: ${embedSettings.tokenExpiration}, ` +
-+      `~${minutesLeft}min left, refresh window: ${minutesBefore}min`
-+    );
- 
-     if (timeUntilExpiration <= timeToUpdate) {
-       console.log('[pwbi] Token expiring soon, refreshing...');
-@@ -41,6 +47,12 @@
-    * @param {object} report - The Report object returned by powerbiClient.load().
-    */
-   async function updateToken(embedSettings, report) {
-+    // Prevent a second refresh launching while one is already in flight.
-+    if (embedSettings._refreshing) {
-+      return;
-+    }
-+    embedSettings._refreshing = true;
-+
-     const { workspaceId, id: reportId, datasetId } = embedSettings;
-     const base = drupalSettings.path.baseUrl;
-     const refreshUrl = `${base}pwbi/token-refresh/${workspaceId}/${reportId}?dataset_id=${encodeURIComponent(datasetId)}`;
-@@ -72,6 +84,9 @@
-     catch (err) {
-       console.error('[pwbi] Token refresh failed', err);
-     }
-+    finally {
-+      embedSettings._refreshing = false;
-+    }
-   }
- 
-   const pwbiEmbed = {
-diff --git a/src/Controller/PwbiTokenRefreshController.php b/src/Controller/PwbiTokenRefreshController.php
-index ee9f46c..17fa029 100644
---- a/src/Controller/PwbiTokenRefreshController.php
-+++ b/src/Controller/PwbiTokenRefreshController.php
-@@ -96,6 +96,15 @@ class PwbiTokenRefreshController extends ControllerBase {
-       ]);
-     }
- 
-+    $this->logger('pwbi')->info(
-+      'Embed token refreshed for report @report (workspace @workspace), expires @expiry.',
-+      [
-+        '@report'    => $report_id,
-+        '@workspace' => $workspace_id,
-+        '@expiry'    => $result['expiration'] ?? 'unknown',
-+      ]
-+    );
-+
-     return new JsonResponse([
-       'token'      => $result['token'],
-       'expiration' => $result['expiration'],

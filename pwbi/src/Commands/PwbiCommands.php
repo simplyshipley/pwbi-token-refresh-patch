@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Drupal\pwbi\Commands;
 
 use Drupal\Component\Serialization\Json;
+use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Entity\EntityFieldManagerInterface;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\KeyValueStore\KeyValueFactoryInterface;
@@ -27,6 +28,20 @@ use Symfony\Component\DependencyInjection\ContainerInterface;
  */
 class PwbiCommands extends DrushCommands {
 
+  /**
+   * Maps configured API endpoint URLs to their expected OAuth2 audience (aud).
+   *
+   * When the cached token's `aud` claim doesn't match this map for the
+   * configured endpoint, the token was issued for the wrong cloud environment
+   * and API calls will fail with 401 Unauthorized.
+   */
+  private const ENDPOINT_AUDIENCE_MAP = [
+    'https://api.powerbi.com'          => 'https://analysis.windows.net/powerbi/api',
+    'https://api.powerbigov.us'        => 'https://analysis.usgovcloudapi.net/powerbi/api',
+    'https://api.high.powerbigov.us'   => 'https://analysis.usgovcloudapi.net/powerbi/api',
+    'https://api.mil.powerbigov.us'    => 'https://analysis.usgovcloudapi.net/powerbi/api',
+  ];
+
   public function __construct(
     protected readonly PowerBiClient $pwbiClient,
     protected readonly Oauth2ClientService $auth,
@@ -34,6 +49,7 @@ class PwbiCommands extends DrushCommands {
     protected readonly EntityFieldManagerInterface $entityFieldManager,
     protected readonly StateInterface $state,
     protected readonly KeyValueFactoryInterface $keyValueFactory,
+    protected readonly ConfigFactoryInterface $configFactory,
   ) {
     parent::__construct();
   }
@@ -50,6 +66,7 @@ class PwbiCommands extends DrushCommands {
       $container->get('entity_field.manager'),
       $container->get('state'),
       $container->get('keyvalue'),
+      $container->get('config.factory'),
     );
   }
 
@@ -93,10 +110,17 @@ class PwbiCommands extends DrushCommands {
       : 'not reported';
     $expired = $token->hasExpired();
 
-    // Decode the JWT payload to verify the OAuth audience (scope).
-    // GCC requires 'analysis.usgovcloudapi.net'; commercial uses 'analysis.windows.net'.
+    // Decode the JWT payload to verify the OAuth audience matches the
+    // configured cloud endpoint. A mismatch means the cached token was issued
+    // for the wrong environment (e.g. commercial token used against GCC API).
+    $configuredEndpoint = $this->configFactory->get('pwbi.settings')->get('pwbi_api_endpoint')
+      ?? 'https://api.powerbi.com';
+    $expectedAudience = self::ENDPOINT_AUDIENCE_MAP[$configuredEndpoint]
+      ?? self::ENDPOINT_AUDIENCE_MAP['https://api.powerbi.com'];
+
     $audienceLabel = 'not a JWT / could not parse';
-    $audienceWarning = FALSE;
+    $audienceMismatch = FALSE;
+    $actualAudience = '';
     $parts = explode('.', $tokenValue);
     if (count($parts) === 3) {
       // JWT segments use URL-safe base64 with padding stripped. Re-add padding
@@ -107,13 +131,13 @@ class PwbiCommands extends DrushCommands {
       $payloadJson = base64_decode($segment, TRUE);
       $payload = ($payloadJson !== FALSE) ? json_decode($payloadJson, TRUE) : NULL;
       if (is_array($payload)) {
-        $audience = (string) ($payload['aud'] ?? 'unknown');
-        if (str_contains($audience, 'usgovcloudapi.net')) {
-          $audienceLabel = $audience . ' (GCC — correct)';
+        $actualAudience = (string) ($payload['aud'] ?? 'unknown');
+        if (str_starts_with($actualAudience, $expectedAudience)) {
+          $audienceLabel = $actualAudience . ' ✓ matches configured endpoint';
         }
         else {
-          $audienceLabel = $audience . ' WARNING: not GCC scope';
-          $audienceWarning = TRUE;
+          $audienceLabel = $actualAudience . ' ✗ MISMATCH — expected: ' . $expectedAudience;
+          $audienceMismatch = TRUE;
         }
       }
     }
@@ -125,17 +149,28 @@ class PwbiCommands extends DrushCommands {
         ['Token (truncated)', substr($tokenValue, 0, 30) . '...'],
         ['Expires', $expiry],
         ['Is expired', $expired ? 'YES (cached token is stale)' : 'No'],
-        ['OAuth audience (aud)', $audienceLabel],
+        ['Configured endpoint', $configuredEndpoint],
+        ['Expected audience', $expectedAudience],
+        ['Token audience (aud)', $audienceLabel],
       ],
     );
 
-    if ($audienceWarning) {
+    if ($audienceMismatch) {
       $this->io()->warning([
-        'The access token audience does not include "usgovcloudapi.net".',
-        'For GCC deployments the OAuth2 client scope must be:',
-        '  https://analysis.usgovcloudapi.net/powerbi/api/.default',
-        'Update the scope at:',
-        '  Admin → Configuration → Services → OAuth2 Clients → pwbi_service_principal',
+        'The cached token was issued for a different cloud environment.',
+        '',
+        "  Token audience:    {$actualAudience}",
+        "  Expected audience: {$expectedAudience}",
+        "  Configured endpoint: {$configuredEndpoint}",
+        '',
+        'Power BI API calls will fail with 401 Unauthorized until this is fixed.',
+        '',
+        'To fix:',
+        '  1. Run: drush pwbi:flush-token',
+        '  2. Verify the OAuth2 client scope matches your endpoint:',
+        '       Admin → Configuration → Services → OAuth2 Clients → pwbi_service_principal',
+        "       Scope should be: {$expectedAudience}/.default",
+        '  3. Run: drush pwbi:auth-check (to confirm the new token has the correct audience)',
       ]);
     }
   }
@@ -319,6 +354,7 @@ class PwbiCommands extends DrushCommands {
         $code = $reportInfo['error']['code'] ?? 'unknown';
         $msg  = $reportInfo['error']['message'] ?? 'no message';
         $this->io()->error("Power BI API error [{$code}]: {$msg}");
+        $this->maybeHintAudienceMismatch($msg);
         return;
       }
 
@@ -374,6 +410,7 @@ class PwbiCommands extends DrushCommands {
       $code = $result['error']['code'] ?? 'unknown';
       $msg  = $result['error']['message'] ?? 'no message';
       $this->io()->error("Power BI embed token error [{$code}]: {$msg}");
+      $this->maybeHintAudienceMismatch($msg);
       return;
     }
 
@@ -395,6 +432,44 @@ class PwbiCommands extends DrushCommands {
         ['Token ID', $result['tokenId'] ?? 'n/a'],
       ],
     );
+  }
+
+  /**
+   * Print a hint if an API error message suggests an OAuth2 audience mismatch.
+   *
+   * Power BI returns 401 with error messages containing "audience", "token",
+   * or "unauthorized" when the Bearer token was issued for a different cloud
+   * (e.g. a commercial token used against the GCC API endpoint). This helper
+   * surfaces the fix steps inline so the developer doesn't have to guess.
+   *
+   * @param string $msg
+   *   The error message from the Power BI API response.
+   */
+  protected function maybeHintAudienceMismatch(string $msg): void {
+    $lower = strtolower($msg);
+    if (!str_contains($lower, 'audience') && !str_contains($lower, 'unauthorized') && !str_contains($lower, 'token')) {
+      return;
+    }
+
+    $configuredEndpoint = $this->configFactory->get('pwbi.settings')->get('pwbi_api_endpoint')
+      ?? 'https://api.powerbi.com';
+    $expectedAudience = self::ENDPOINT_AUDIENCE_MAP[$configuredEndpoint]
+      ?? self::ENDPOINT_AUDIENCE_MAP['https://api.powerbi.com'];
+
+    $this->io()->note([
+      'This error may indicate an OAuth2 token audience mismatch.',
+      'The cached token may have been issued for a different cloud environment.',
+      '',
+      "  Configured endpoint: {$configuredEndpoint}",
+      "  Expected audience:   {$expectedAudience}/.default",
+      '',
+      'To fix:',
+      '  1. Run: drush pwbi:flush-token',
+      '  2. Verify the OAuth2 client scope at:',
+      '       Admin → Configuration → Services → OAuth2 Clients → pwbi_service_principal',
+      "       Scope should be: {$expectedAudience}/.default",
+      '  3. Run: drush pwbi:auth-check (confirm new token has the correct audience)',
+    ]);
   }
 
   /**

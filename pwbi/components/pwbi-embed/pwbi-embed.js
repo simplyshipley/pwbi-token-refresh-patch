@@ -24,13 +24,17 @@
     const timeToUpdate = minutesBefore * 60 * 1000;
     const minutesLeft = Math.round(timeUntilExpiration / 60000);
 
-    console.log(
-      `[pwbi] Token check — expires: ${embedSettings.tokenExpiration}, ` +
-      `~${minutesLeft}min left, refresh window: ${minutesBefore}min`
-    );
+    if (embedSettings.debug_enabled) {
+      console.log(
+        `[pwbi] Token check — expires: ${embedSettings.tokenExpiration}, ` +
+        `~${minutesLeft}min left, refresh window: ${minutesBefore}min`
+      );
+    }
 
     if (timeUntilExpiration <= timeToUpdate) {
-      console.log('[pwbi] Token expiring soon, refreshing...');
+      if (embedSettings.debug_enabled) {
+        console.log('[pwbi] Token expiring soon, refreshing...');
+      }
       updateToken(embedSettings, report);
     }
   }
@@ -79,7 +83,9 @@
       // Apply the new token directly to the report reference we already hold.
       await report.setAccessToken(data.token);
 
-      console.log('[pwbi] Token refreshed. New expiration:', data.expiration);
+      if (embedSettings.debug_enabled) {
+        console.log('[pwbi] Token refreshed. New expiration:', data.expiration);
+      }
     }
     catch (err) {
       console.error('[pwbi] Token refresh failed', err);
