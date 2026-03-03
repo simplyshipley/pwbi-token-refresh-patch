@@ -20,10 +20,10 @@ index 0000000..64d9f8d
 +overriden
 +Çads
 diff --git a/components/pwbi-embed/pwbi-embed.js b/components/pwbi-embed/pwbi-embed.js
-index fd784bc..4baa057 100644
+index fd784bc..38b418d 100644
 --- a/components/pwbi-embed/pwbi-embed.js
 +++ b/components/pwbi-embed/pwbi-embed.js
-@@ -1,21 +1,152 @@
+@@ -1,21 +1,166 @@
  ((Drupal) => {
 +  // Default lead time (ms) before token expiry to fire the first refresh.
 +  // Overridden per-embed by embedSettings.token_refresh_lead_ms which is set
@@ -31,13 +31,14 @@ index fd784bc..4baa057 100644
 +  const DEFAULT_FIRE_BEFORE_EXPIRY_MS = 1500;
 +
 +  /**
-+   * Schedule the next token refresh precisely at tokenExpiration + 500 ms.
++   * Schedule the next token refresh token_refresh_lead_ms milliseconds before
++   * the token expiry timestamp.
 +   *
 +   * Uses setTimeout rather than a fixed interval so the refresh fires exactly
 +   * when needed instead of polling every 30 seconds. After each successful
 +   * refresh, updateToken() calls this again with the (possibly updated) expiry.
 +   *
-+   * Falls back to a 5-second retry when no valid expiry is available.
++   * Falls back to a 5-minute retry when no valid expiry is available.
 +   *
 +   * @param {object} embedSettings - drupalSettings entry for this report.
 +   * @param {object} report - The Report object returned by powerbiClient.load().
@@ -140,14 +141,27 @@ index fd784bc..4baa057 100644
 +      await report.setAccessToken(data.token);
 +
 +      if (expirationChanged) {
-+        // Fresh expiry — schedule next refresh precisely at the new expiry + 500 ms.
++        // Fresh expiry — reset retry counter and schedule next refresh.
++        embedSettings._refreshRetries = 0;
 +        scheduleNextRefresh(embedSettings, report);
 +      } else {
-+        // OAuth window not renewed yet — retry every 1 s until expiry advances.
-+        embedSettings._refreshTimer = setTimeout(
-+          () => updateToken(embedSettings, report),
-+          1000,
-+        );
++        // OAuth window not renewed yet — retry every 1 s until expiry advances,
++        // capped at 15 attempts to avoid hammering the endpoint during outages.
++        embedSettings._refreshRetries = (embedSettings._refreshRetries ?? 0) + 1;
++        if (embedSettings._refreshRetries >= 15) {
++          if (embedSettings.debug_enabled) {
++            console.warn(`[pwbi] OAuth renewal stalled after ${embedSettings._refreshRetries} attempts. Slowing to 30 s.`);
++          }
++          embedSettings._refreshTimer = setTimeout(() => {
++            embedSettings._refreshRetries = 0;
++            updateToken(embedSettings, report);
++          }, 30000);
++        } else {
++          embedSettings._refreshTimer = setTimeout(
++            () => updateToken(embedSettings, report),
++            1000,
++          );
++        }
 +      }
 +    }
 +    catch (err) {
@@ -189,7 +203,7 @@ index fd784bc..4baa057 100644
            return;
          }
  
-@@ -23,6 +154,7 @@
+@@ -23,6 +168,7 @@
          if (embedConfiguration.settings === undefined) {
            embedConfiguration.settings = {};
          }
@@ -197,7 +211,7 @@ index fd784bc..4baa057 100644
          // Get a reference to the HTML element that contains the embedded report.
          const powerBiEmbedParams = {
            embedConfiguration,
-@@ -33,37 +165,65 @@
+@@ -33,37 +179,67 @@
            detail: powerBiEmbedParams,
          });
          window.dispatchEvent(PowerBiPreEmbed);
@@ -229,12 +243,13 @@ index fd784bc..4baa057 100644
 +            // setTimeout has a baseline before any refresh has occurred.
 +            embedSettings.tokenExpiration = embedSettings.tokenExpirationDate;
 +
-+            // Schedule the first refresh precisely at expiry + 500 ms.
++            // Schedule the first refresh token_refresh_lead_ms ms before expiry.
 +            scheduleNextRefresh(embedSettings, report);
 +
 +            // Also check immediately when the tab becomes visible again — the
 +            // browser may have throttled the setTimeout while backgrounded.
-+            document.addEventListener('visibilitychange', () => {
++            // Store the handler reference so detach() can remove it cleanly.
++            embedSettings._visibilityHandler = () => {
 +              if (!document.hidden) {
 +                const msUntilExpiry = Date.parse(embedSettings.tokenExpiration) - Date.now();
 +                if (msUntilExpiry <= 0) {
@@ -245,7 +260,8 @@ index fd784bc..4baa057 100644
 +                  scheduleNextRefresh(embedSettings, report);
 +                }
 +              }
-+            });
++            };
++            document.addEventListener('visibilitychange', embedSettings._visibilityHandler);
 +          }
          });
        });
@@ -273,7 +289,7 @@ index fd784bc..4baa057 100644
          }
        });
        document.dispatchEvent(blockEmbedEvent);
-@@ -75,7 +235,7 @@
+@@ -75,7 +251,7 @@
        if (!settings.pwbi_flag) {
          const waitForGlobal = function (key, settings) {
            if (window[key]) {
@@ -282,7 +298,7 @@ index fd784bc..4baa057 100644
            } else {
              setTimeout(function () {
                waitForGlobal(key, settings);
-@@ -83,7 +243,7 @@
+@@ -83,9 +259,16 @@
            }
          };
          settings.pwbi_flag = true;
@@ -290,7 +306,17 @@ index fd784bc..4baa057 100644
 +        waitForGlobal('powerbi', settings);
        }
      },
-     detach() {},
+-    detach() {},
++    detach(context, settings) {
++      Object.values(settings.pwbi_embed ?? {}).forEach((embedSettings) => {
++        clearTimeout(embedSettings._refreshTimer);
++        if (embedSettings._visibilityHandler) {
++          document.removeEventListener('visibilitychange', embedSettings._visibilityHandler);
++        }
++      });
++    },
+   };
+ })(Drupal);
 diff --git a/config/install/pwbi.settings.yml b/config/install/pwbi.settings.yml
 new file mode 100644
 index 0000000..9b4a040
@@ -943,7 +969,7 @@ index 5cf033e..0c288cd 100644
 +  title: 'Request Power BI embed tokens'
 +  description: 'Allows the token refresh endpoint to issue embed tokens. Grant to roles that can view embedded Power BI reports.'
 diff --git a/pwbi.routing.yml b/pwbi.routing.yml
-index 020547c..9bfb414 100644
+index 020547c..6f9a893 100644
 --- a/pwbi.routing.yml
 +++ b/pwbi.routing.yml
 @@ -21,3 +21,13 @@ pwbi.embed_settings:
@@ -955,9 +981,9 @@ index 020547c..9bfb414 100644
 +  path: '/pwbi/token-refresh/{workspace_id}/{report_id}'
 +  defaults:
 +    _controller: '\Drupal\pwbi\Controller\PwbiTokenRefreshController::refresh'
-+    _title: 'Power BI token refresh'
 +  requirements:
 +    _permission: 'view pwbi embed token'
++    _format: 'json'
 +    workspace_id: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
 +    report_id: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
 diff --git a/pwbi.services.yml b/pwbi.services.yml
@@ -1861,6 +1887,19 @@ index 0000000..b177bf8
 +  }
 +
 +}
+diff --git a/src/EventSubscriber/PwbiResponseSubscriber.php b/src/EventSubscriber/PwbiResponseSubscriber.php
+index 610430c..752614a 100644
+--- a/src/EventSubscriber/PwbiResponseSubscriber.php
++++ b/src/EventSubscriber/PwbiResponseSubscriber.php
+@@ -57,7 +57,7 @@ class PwbiResponseSubscriber implements EventSubscriberInterface {
+     }
+ 
+     $max_age = (int) $cache->getCacheMaxAge();
+-    if ($max_age !== Cache::PERMANENT) {
++    if ($max_age > 0) {
+       $response->setMaxAge($max_age);
+       $date = new \DateTime('@' . ($this->time->getRequestTime() + $max_age));
+       $response->setExpires($date);
 diff --git a/src/Form/PowerBiEmbedConfigForm.php b/src/Form/PowerBiEmbedConfigForm.php
 index 5c2b2e7..5a109cc 100644
 --- a/src/Form/PowerBiEmbedConfigForm.php
