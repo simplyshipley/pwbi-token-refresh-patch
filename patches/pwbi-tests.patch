@@ -124,7 +124,7 @@ index 0000000..ce03e2e
 +}
 diff --git a/tests/src/Functional/PowerBiEmbedConfigFormTest.php b/tests/src/Functional/PowerBiEmbedConfigFormTest.php
 new file mode 100644
-index 0000000..966fe7d
+index 0000000..8575722
 --- /dev/null
 +++ b/tests/src/Functional/PowerBiEmbedConfigFormTest.php
 @@ -0,0 +1,153 @@
@@ -190,10 +190,10 @@ index 0000000..966fe7d
 +    $this->assertSession()->statusCodeEquals(200);
 +
 +    $this->submitForm([
-+      'pwbi_workspaces'       => 'a1b2c3d4-e5f6-7890-abcd-ef1234567890|Test Workspace',
-+      'token_refresh_enabled' => TRUE,
-+      'token_refresh_minutes' => 15,
-+      'debug_enabled'         => TRUE,
++      'pwbi_workspaces'        => 'a1b2c3d4-e5f6-7890-abcd-ef1234567890|Test Workspace',
++      'token_refresh_enabled'  => TRUE,
++      'token_refresh_lead_ms'  => 2000,
++      'debug_enabled'          => TRUE,
 +    ], 'Save configuration');
 +
 +    $this->assertSession()->statusCodeEquals(200);
@@ -201,12 +201,12 @@ index 0000000..966fe7d
 +
 +    $config = $this->config('pwbi.settings');
 +    $this->assertTrue($config->get('token_refresh_enabled'));
-+    $this->assertSame(15, $config->get('token_refresh_minutes'));
++    $this->assertSame(2000, $config->get('token_refresh_lead_ms'));
 +    $this->assertTrue($config->get('debug_enabled'));
 +  }
 +
 +  /**
-+   * Minute validation is skipped when token refresh is disabled.
++   * Lead-ms validation is skipped when token refresh is disabled.
 +   *
 +   * The field is hidden via #states and its value may be stale or out-of-range
 +   * from a previous save, so the validator must not flag it when refresh is off.
@@ -216,21 +216,21 @@ index 0000000..966fe7d
 +  public function testValidationSkippedWhenRefreshDisabled(): void {
 +    $this->drupalGet('admin/config/pwbi/embed_settings');
 +
-+    // token_refresh_enabled is unchecked; submit an out-of-range minutes value.
++    // token_refresh_enabled is unchecked; submit an out-of-range ms value.
 +    $this->submitForm([
 +      'pwbi_workspaces'       => 'a1b2c3d4-e5f6-7890-abcd-ef1234567890|Test Workspace',
 +      'token_refresh_enabled' => FALSE,
-+      'token_refresh_minutes' => 99,
++      'token_refresh_lead_ms' => 99,
 +    ], 'Save configuration');
 +
 +    // No validation error — form should save successfully.
 +    $this->assertSession()->statusCodeEquals(200);
 +    $this->assertSession()->pageTextContains('The configuration options have been saved.');
-+    $this->assertSession()->pageTextNotContains('Minutes must be between 1 and 55');
++    $this->assertSession()->pageTextNotContains('Lead time must be between 250 and 10000 milliseconds');
 +  }
 +
 +  /**
-+   * Minute validation fires when token refresh is enabled and value is invalid.
++   * Lead-ms validation fires when token refresh is enabled and value is invalid.
 +   *
 +   * @covers ::validateForm
 +   */
@@ -240,11 +240,11 @@ index 0000000..966fe7d
 +    $this->submitForm([
 +      'pwbi_workspaces'       => 'a1b2c3d4-e5f6-7890-abcd-ef1234567890|Test Workspace',
 +      'token_refresh_enabled' => TRUE,
-+      'token_refresh_minutes' => 99,
++      'token_refresh_lead_ms' => 99,
 +    ], 'Save configuration');
 +
 +    $this->assertSession()->statusCodeEquals(200);
-+    $this->assertSession()->pageTextContains('Minutes must be between 1 and 55');
++    $this->assertSession()->pageTextContains('Lead time must be between 250 and 10000 milliseconds');
 +    // Config must not have been updated.
 +    $this->assertFalse((bool) $this->config('pwbi.settings')->get('token_refresh_enabled'));
 +  }
@@ -461,7 +461,7 @@ index 0000000..ec23d56
 +
 +}
 diff --git a/tests/src/Kernel/PowerBiEmbedFormatterTest.php b/tests/src/Kernel/PowerBiEmbedFormatterTest.php
-index 372d834..f2fecf3 100644
+index 372d834..9c3a98a 100644
 --- a/tests/src/Kernel/PowerBiEmbedFormatterTest.php
 +++ b/tests/src/Kernel/PowerBiEmbedFormatterTest.php
 @@ -65,13 +65,20 @@ class PowerBiEmbedFormatterTest extends KernelTestBase {
@@ -489,7 +489,7 @@ index 372d834..f2fecf3 100644
      $field_storage = FieldStorageConfig::create([
        'field_name' => 'embed',
        'entity_type' => 'media',
-@@ -115,23 +122,31 @@ class PowerBiEmbedFormatterTest extends KernelTestBase {
+@@ -115,37 +122,89 @@ class PowerBiEmbedFormatterTest extends KernelTestBase {
      ]);
      $media->save();
  
@@ -524,23 +524,29 @@ index 372d834..f2fecf3 100644
  
      // @todo Assert other elements and output HTML.
 -    // Field contains the correct cache.
+-    $this->assertSame(
+-      [
+-        'contexts' => [
+-          'languages:language_interface',
+-          'theme',
+-          'user.permissions',
+-        ],
+-        'tags' => [
+-          'pwbi_embed',
+-        ],
+-        'max-age' => 300,
+-      ],
+-      $build['embed']['#cache'],
+-    );
 +    // Field contains the correct cache — including the pwbi.settings config tag
 +    // added so that admin setting changes immediately invalidate cached renders.
-     $this->assertSame(
-       [
-         'contexts' => [
-@@ -141,6 +156,7 @@ class PowerBiEmbedFormatterTest extends KernelTestBase {
-         ],
-         'tags' => [
-           'pwbi_embed',
-+          'config:pwbi.settings',
-         ],
-         'max-age' => 300,
-       ],
-@@ -148,4 +164,57 @@ class PowerBiEmbedFormatterTest extends KernelTestBase {
-     );
-   }
- 
++    $cache = $build['embed']['#cache'];
++    $this->assertSame(300, $cache['max-age']);
++    $this->assertContains('pwbi_embed', $cache['tags']);
++    $this->assertContains('config:pwbi.settings', $cache['tags']);
++    $this->assertContains('user.permissions', $cache['contexts']);
++  }
++
 +  /**
 +   * Token refresh settings are present in drupalSettings when enabled.
 +   *
@@ -592,8 +598,8 @@ index 372d834..f2fecf3 100644
 +    $renderer->renderInIsolation($build['embed']);
 +
 +    $this->assertSame(1200, $build['embed']['#cache']['max-age']);
-+  }
-+
+   }
+ 
  }
 diff --git a/tests/src/Kernel/SettingsOverrideTest.php b/tests/src/Kernel/SettingsOverrideTest.php
 new file mode 100644
