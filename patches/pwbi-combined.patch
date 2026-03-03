@@ -293,17 +293,16 @@ index fd784bc..4baa057 100644
      detach() {},
 diff --git a/config/install/pwbi.settings.yml b/config/install/pwbi.settings.yml
 new file mode 100644
-index 0000000..e02b5bb
+index 0000000..9b4a040
 --- /dev/null
 +++ b/config/install/pwbi.settings.yml
-@@ -0,0 +1,5 @@
+@@ -0,0 +1,4 @@
 +pwbi_api_endpoint: 'https://api.powerbi.com'
 +token_refresh_enabled: false
-+token_refresh_minutes: 10
 +token_refresh_lead_ms: 1500
 +debug_enabled: false
 diff --git a/config/schema/pwbi.schema.yml b/config/schema/pwbi.schema.yml
-index 6397c5b..93afea7 100644
+index 6397c5b..9ff2965 100644
 --- a/config/schema/pwbi.schema.yml
 +++ b/config/schema/pwbi.schema.yml
 @@ -5,6 +5,12 @@ oauth2_client.oauth2_client.*.third_party.pwbi:
@@ -319,7 +318,7 @@ index 6397c5b..93afea7 100644
      use_cert:
        type: string
        label: Use certificate
-@@ -20,6 +26,26 @@ pwbi_embed.embed:
+@@ -20,6 +26,23 @@ pwbi_embed.embed:
        type: string
        label: PowerBi Workspaces
  
@@ -333,9 +332,6 @@ index 6397c5b..93afea7 100644
 +    token_refresh_enabled:
 +      type: boolean
 +      label: Enable automatic embed token refresh
-+    token_refresh_minutes:
-+      type: integer
-+      label: Minutes before expiry to refresh
 +    token_refresh_lead_ms:
 +      type: integer
 +      label: Milliseconds before expiry to fire first refresh
@@ -1866,7 +1862,7 @@ index 0000000..b177bf8
 +
 +}
 diff --git a/src/Form/PowerBiEmbedConfigForm.php b/src/Form/PowerBiEmbedConfigForm.php
-index 5c2b2e7..6bc2ca5 100644
+index 5c2b2e7..5a109cc 100644
 --- a/src/Form/PowerBiEmbedConfigForm.php
 +++ b/src/Form/PowerBiEmbedConfigForm.php
 @@ -4,19 +4,25 @@ declare(strict_types=1);
@@ -1928,7 +1924,7 @@ index 5c2b2e7..6bc2ca5 100644
     */
    public function getFormId(): string {
      return 'pwbi_settings';
-@@ -46,34 +54,125 @@ class PowerBiEmbedConfigForm extends FormBase {
+@@ -46,34 +54,108 @@ class PowerBiEmbedConfigForm extends FormBase {
     * {@inheritdoc}
     */
    public function buildForm(array $form, FormStateInterface $form_state): array {
@@ -1964,18 +1960,6 @@ index 5c2b2e7..6bc2ca5 100644
 +      '#title' => $this->t('Enable automatic embed token refresh'),
 +      '#default_value' => $pwbi_settings->get('token_refresh_enabled') ?? FALSE,
 +      '#description' => $this->t('Silently renew embed tokens before they expire, preserving all user state.'),
-+    ];
-+
-+    $form['token_refresh_minutes'] = [
-+      '#type' => 'number',
-+      '#title' => $this->t('Minutes before expiry to refresh'),
-+      '#default_value' => $pwbi_settings->get('token_refresh_minutes') ?? 10,
-+      '#min' => 1,
-+      '#max' => 55,
-+      '#description' => $this->t('Used to reduce the server-side render cache max-age so a new page load always gets a token with enough remaining life.'),
-+      '#states' => [
-+        'visible' => [':input[name="token_refresh_enabled"]' => ['checked' => TRUE]],
-+      ],
 +    ];
 +
 +    $form['token_refresh_lead_ms'] = [
@@ -2019,10 +2003,6 @@ index 5c2b2e7..6bc2ca5 100644
 +    // is hidden (via #states) when disabled, and the submitted value may be
 +    // empty or out-of-range from a previous save with a different setting.
 +    if ($form_state->getValue('token_refresh_enabled')) {
-+      $minutes = (int) $form_state->getValue('token_refresh_minutes');
-+      if ($minutes < 1 || $minutes > 55) {
-+        $form_state->setErrorByName('token_refresh_minutes', $this->t('Minutes must be between 1 and 55.'));
-+      }
 +      $lead_ms = (int) $form_state->getValue('token_refresh_lead_ms');
 +      if ($lead_ms < 250 || $lead_ms > 10000) {
 +        $form_state->setErrorByName('token_refresh_lead_ms', $this->t('Lead time must be between 250 and 10000 milliseconds.'));
@@ -2048,7 +2028,6 @@ index 5c2b2e7..6bc2ca5 100644
 +    $this->config('pwbi.settings')
 +      ->set('pwbi_api_endpoint', $new_endpoint)
 +      ->set('token_refresh_enabled', (bool) $form_state->getValue('token_refresh_enabled'))
-+      ->set('token_refresh_minutes', (int) $form_state->getValue('token_refresh_minutes'))
 +      ->set('token_refresh_lead_ms', (int) $form_state->getValue('token_refresh_lead_ms'))
 +      ->set('debug_enabled', (bool) $form_state->getValue('debug_enabled'))
 +      ->save();
@@ -2067,7 +2046,7 @@ index 5c2b2e7..6bc2ca5 100644
  
  }
 diff --git a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php b/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
-index 0876f69..f3ea171 100644
+index 0876f69..02ad61b 100644
 --- a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
 +++ b/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
 @@ -5,6 +5,9 @@ declare(strict_types=1);
@@ -2118,7 +2097,7 @@ index 0876f69..f3ea171 100644
      foreach ($items as $item) {
        $report_id = $item->getValue()['report_id'];
        $workspace = $item->getValue()['workspace_id'];
-@@ -84,16 +97,30 @@ class PowerBiEmbedFormatter extends FormatterBase {
+@@ -84,16 +97,23 @@ class PowerBiEmbedFormatter extends FormatterBase {
        $report_height_units = $item->getValue()['report_height_units'];
        $report_width_units = $item->getValue()['report_width_units'];
        $report_configuration = $this->pwbiEmbed->getEmbedDataFromApi($workspace, $report_id);
@@ -2135,13 +2114,6 @@ index 0876f69..f3ea171 100644
 -        $cache_max_age = $token_expiration->getTimestamp() - $current_time->getTimestamp();
 +      if ($token_expiration->getTimestamp() > $current_time) {
 +        $cache_max_age = $token_expiration->getTimestamp() - $current_time;
-+        // When JS auto-refresh is enabled, expire the render cache before the
-+        // refresh window so any new page load always gets a token with enough
-+        // life remaining for the JS timer to schedule properly.
-+        if ($pwbi_settings->get('token_refresh_enabled')) {
-+          $refresh_buffer = (int) ($pwbi_settings->get('token_refresh_minutes') ?? 10) * 60;
-+          $cache_max_age = max(0, $cache_max_age - $refresh_buffer);
-+        }
        }
        $embed_array = [
          '#cache' => [
@@ -2153,7 +2125,7 @@ index 0876f69..f3ea171 100644
          ],
          '#type' => 'component',
          '#component' => 'pwbi:pwbi-embed',
-@@ -108,7 +135,7 @@ class PowerBiEmbedFormatter extends FormatterBase {
+@@ -108,7 +128,7 @@ class PowerBiEmbedFormatter extends FormatterBase {
          '#attached' => [
            'drupalSettings' => [
              'pwbi_embed' => [
@@ -2162,7 +2134,7 @@ index 0876f69..f3ea171 100644
              ],
              'language' => $langcode,
            ],
-@@ -175,20 +202,32 @@ class PowerBiEmbedFormatter extends FormatterBase {
+@@ -175,20 +195,31 @@ class PowerBiEmbedFormatter extends FormatterBase {
     * @return array <mixed>
     *   The options that will be used to embed a powerbi report.
     */
@@ -2198,7 +2170,6 @@ index 0876f69..f3ea171 100644
 +    // Set boolean/int config after the empty() cleanup loop since empty(FALSE)
 +    // and empty(0) are truthy and would strip these values if set beforehand.
 +    $embed_options['token_refresh_enabled'] = (bool) ($pwbi_settings->get('token_refresh_enabled') ?? FALSE);
-+    $embed_options['token_refresh_minutes'] = (int) ($pwbi_settings->get('token_refresh_minutes') ?? 10);
 +    $embed_options['token_refresh_lead_ms'] = (int) ($pwbi_settings->get('token_refresh_lead_ms') ?? 1500);
 +    $embed_options['debug_enabled'] = (bool) ($pwbi_settings->get('debug_enabled') ?? FALSE);
 +

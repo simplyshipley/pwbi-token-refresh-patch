@@ -461,7 +461,7 @@ index 0000000..ec23d56
 +
 +}
 diff --git a/tests/src/Kernel/PowerBiEmbedFormatterTest.php b/tests/src/Kernel/PowerBiEmbedFormatterTest.php
-index 372d834..2a0334e 100644
+index 372d834..f2fecf3 100644
 --- a/tests/src/Kernel/PowerBiEmbedFormatterTest.php
 +++ b/tests/src/Kernel/PowerBiEmbedFormatterTest.php
 @@ -65,13 +65,20 @@ class PowerBiEmbedFormatterTest extends KernelTestBase {
@@ -537,7 +537,7 @@ index 372d834..2a0334e 100644
          ],
          'max-age' => 300,
        ],
-@@ -148,4 +164,58 @@ class PowerBiEmbedFormatterTest extends KernelTestBase {
+@@ -148,4 +164,57 @@ class PowerBiEmbedFormatterTest extends KernelTestBase {
      );
    }
  
@@ -545,8 +545,8 @@ index 372d834..2a0334e 100644
 +   * Token refresh settings are present in drupalSettings when enabled.
 +   *
 +   * When token_refresh_enabled is TRUE the formatter must pass
-+   * token_refresh_enabled and token_refresh_minutes to the JS so it can
-+   * schedule refreshes at the correct interval.
++   * token_refresh_enabled and token_refresh_lead_ms to the JS so it can
++   * schedule the precise refresh timer.
 +   *
 +   * @covers ::buildEmbedConfiguration
 +   */
@@ -554,7 +554,7 @@ index 372d834..2a0334e 100644
 +    \Drupal::configFactory()
 +      ->getEditable('pwbi.settings')
 +      ->set('token_refresh_enabled', TRUE)
-+      ->set('token_refresh_minutes', 10)
++      ->set('token_refresh_lead_ms', 2000)
 +      ->save();
 +
 +    ['display' => $display, 'media' => $media] = $this->createFixture(1200);
@@ -564,35 +564,34 @@ index 372d834..2a0334e 100644
 +    $settings = $build['embed'][0]['#attached']['drupalSettings']['pwbi_embed'][$embed_key];
 +
 +    $this->assertTrue($settings['token_refresh_enabled']);
-+    $this->assertSame(10, $settings['token_refresh_minutes']);
++    $this->assertSame(2000, $settings['token_refresh_lead_ms']);
++    $this->assertArrayNotHasKey('token_refresh_minutes', $settings);
 +    // No session-specific data (e.g. CSRF tokens) in drupalSettings — the
 +    // route is a plain GET endpoint so the render cache is session-agnostic.
 +    $this->assertArrayNotHasKey('token_refresh_csrf', $settings);
 +  }
 +
 +  /**
-+   * Cache max-age is reduced by the refresh buffer when token refresh is on.
++   * Cache max-age equals the full token lifetime when token refresh is on.
 +   *
-+   * The formatter subtracts token_refresh_minutes * 60 from the raw token
-+   * lifetime so that any fresh page load has a token with enough remaining life
-+   * for the JS timer to fire at least once before expiry.
++   * The JS handles in-place token refresh via setAccessToken(), so the render
++   * cache does not need to be artificially shortened — it should live for the
++   * full duration of the token regardless of whether refresh is enabled.
 +   *
 +   * @covers ::viewElements
 +   */
-+  public function testCacheMaxAgeReducedByRefreshBuffer(): void {
++  public function testCacheMaxAgeEqualsFullTokenLifetimeWhenRefreshEnabled(): void {
 +    \Drupal::configFactory()
 +      ->getEditable('pwbi.settings')
 +      ->set('token_refresh_enabled', TRUE)
-+      ->set('token_refresh_minutes', 10)
 +      ->save();
 +
-+    // Token lifetime: 1200s. Buffer: 10 * 60 = 600s. Expected max-age: 600.
 +    ['display' => $display, 'media' => $media] = $this->createFixture(1200);
 +    $build = $display->build($media);
 +    $renderer = \Drupal::service('renderer');
 +    $renderer->renderInIsolation($build['embed']);
 +
-+    $this->assertSame(600, $build['embed']['#cache']['max-age']);
++    $this->assertSame(1200, $build['embed']['#cache']['max-age']);
 +  }
 +
  }
