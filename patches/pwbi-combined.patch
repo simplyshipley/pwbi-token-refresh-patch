@@ -20,48 +20,55 @@ index 0000000..64d9f8d
 +overriden
 +Çads
 diff --git a/components/pwbi-embed/pwbi-embed.js b/components/pwbi-embed/pwbi-embed.js
-index fd784bc..c27224f 100644
+index fd784bc..232a979 100644
 --- a/components/pwbi-embed/pwbi-embed.js
 +++ b/components/pwbi-embed/pwbi-embed.js
-@@ -1,21 +1,110 @@
+@@ -1,21 +1,154 @@
  ((Drupal) => {
-+  // Minutes before token expiration to trigger a refresh.
-+  const MINUTES_BEFORE_EXPIRATION = 10;
-+
-+  // How often (ms) to poll and check whether a refresh is needed.
-+  // 30 seconds matches the Microsoft-recommended interval.
-+  const INTERVAL_TIME = 30000;
++  // How many milliseconds before token expiry to fire the first refresh attempt.
++  // Firing before expiry lets setAccessToken() receive a newly-issued credential
++  // while the current token is still valid, avoiding any visible gap. If the
++  // OAuth window hasn't expired yet the embed token expiry will be unchanged and
++  // the 1-second retry loop in updateToken() catches the renewal on the first
++  // call after the OAuth boundary.
++  const FIRE_BEFORE_EXPIRY_MS = 1500;
 +
 +  /**
-+   * Check whether the token is within the refresh window and update if so.
++   * Schedule the next token refresh precisely at tokenExpiration + 500 ms.
 +   *
-+   * Called on a 30-second interval and also immediately when the tab becomes
-+   * visible again after being backgrounded. Mirrors the pattern in Microsoft's
-+   * token refresh documentation.
++   * Uses setTimeout rather than a fixed interval so the refresh fires exactly
++   * when needed instead of polling every 30 seconds. After each successful
++   * refresh, updateToken() calls this again with the (possibly updated) expiry.
++   *
++   * Falls back to a 5-second retry when no valid expiry is available.
 +   *
 +   * @param {object} embedSettings - drupalSettings entry for this report.
 +   * @param {object} report - The Report object returned by powerbiClient.load().
 +   */
-+  function checkTokenAndUpdate(embedSettings, report) {
-+    const currentTime = Date.now();
-+    const expiration = Date.parse(embedSettings.tokenExpiration);
-+    const timeUntilExpiration = expiration - currentTime;
-+    const minutesBefore = embedSettings.token_refresh_minutes ?? MINUTES_BEFORE_EXPIRATION;
-+    const timeToUpdate = minutesBefore * 60 * 1000;
-+    const minutesLeft = Math.round(timeUntilExpiration / 60000);
++  function scheduleNextRefresh(embedSettings, report) {
++    clearTimeout(embedSettings._refreshTimer);
 +
-+    if (embedSettings.debug_enabled) {
-+      console.log(
-+        `[pwbi] Token check — expires: ${embedSettings.tokenExpiration}, ` +
-+        `~${minutesLeft}min left, refresh window: ${minutesBefore}min`
++    const expiry = Date.parse(embedSettings.tokenExpiration);
++    if (isNaN(expiry)) {
++      // No parseable expiry — retry in 5 minutes.
++      embedSettings._refreshTimer = setTimeout(
++        () => updateToken(embedSettings, report),
++        5 * 60 * 1000,
 +      );
++      return;
 +    }
 +
-+    if (timeUntilExpiration <= timeToUpdate) {
-+      if (embedSettings.debug_enabled) {
-+        console.log('[pwbi] Token expiring soon, refreshing...');
-+      }
-+      updateToken(embedSettings, report);
++    const msUntilFire = expiry - Date.now() - FIRE_BEFORE_EXPIRY_MS;
++    // Clamp to a 5 s minimum so a past-or-imminent expiry doesn't spin.
++    const fireIn = Math.max(5000, msUntilFire);
++    embedSettings._refreshTimer = setTimeout(
++      () => updateToken(embedSettings, report),
++      fireIn,
++    );
++
++    if (embedSettings.debug_enabled) {
++      const fireAt = new Date(Date.now() + fireIn);
++      console.log(`[pwbi] Next token refresh scheduled for ${fireAt.toISOString()} (in ${Math.round(fireIn / 1000)}s)`);
 +    }
 +  }
 +
@@ -70,8 +77,8 @@ index fd784bc..c27224f 100644
 +   *
 +   * Passes the report object directly (captured from powerbiClient.load()) so
 +   * there is no fragile DOM re-lookup via powerbi.get(). After a successful
-+   * refresh, embedSettings.tokenExpiration is updated so subsequent
-+   * checkTokenAndUpdate() calls use the new expiry window.
++   * refresh, scheduleNextRefresh() is called so the next timer is set
++   * relative to the new (or unchanged) expiry.
 +   *
 +   * @param {object} embedSettings - drupalSettings entry for this report.
 +   * @param {object} report - The Report object returned by powerbiClient.load().
@@ -94,6 +101,11 @@ index fd784bc..c27224f 100644
 +
 +      if (!response.ok) {
 +        console.error('[pwbi] Token refresh HTTP error', response.status);
++        // Retry in 5 s on HTTP errors.
++        embedSettings._refreshTimer = setTimeout(
++          () => updateToken(embedSettings, report),
++          5000,
++        );
 +        return;
 +      }
 +
@@ -103,18 +115,50 @@ index fd784bc..c27224f 100644
 +        return;
 +      }
 +
-+      // Update the tracked expiration so future interval checks use the new window.
++      const oldExpiration = embedSettings.tokenExpiration;
++      const expirationChanged = oldExpiration !== data.expiration;
++
++      if (embedSettings.debug_enabled) {
++        const prevToken = embedSettings._lastToken ?? embedSettings.accessToken ?? '';
++        const tokenChanged = prevToken !== data.token;
++        // Log last 8 chars only — enough to confirm change without exposing credential.
++        const oldSnippet = prevToken.slice(-8) || '(none)';
++        const newSnippet = data.token.slice(-8);
++        console.log(
++          `[pwbi] Token refreshed.\n` +
++          `  token:      ...${oldSnippet} → ...${newSnippet} (${tokenChanged ? 'CHANGED' : 'SAME'})\n` +
++          `  expiration: ${oldExpiration} → ${data.expiration} (${expirationChanged ? 'CHANGED' : 'SAME'})`,
++        );
++        if (!expirationChanged) {
++          console.warn('[pwbi] Expiration unchanged — OAuth window not yet renewed. Retrying in 1 s.');
++        }
++      }
++
++      // Update the tracked expiration and token before rescheduling.
 +      embedSettings.tokenExpiration = data.expiration;
++      embedSettings._lastToken = data.token;
 +
 +      // Apply the new token directly to the report reference we already hold.
 +      await report.setAccessToken(data.token);
 +
-+      if (embedSettings.debug_enabled) {
-+        console.log('[pwbi] Token refreshed. New expiration:', data.expiration);
++      if (expirationChanged) {
++        // Fresh expiry — schedule next refresh precisely at the new expiry + 500 ms.
++        scheduleNextRefresh(embedSettings, report);
++      } else {
++        // OAuth window not renewed yet — retry every 1 s until expiry advances.
++        embedSettings._refreshTimer = setTimeout(
++          () => updateToken(embedSettings, report),
++          1000,
++        );
 +      }
 +    }
 +    catch (err) {
 +      console.error('[pwbi] Token refresh failed', err);
++      // Retry in 5 s on network errors.
++      embedSettings._refreshTimer = setTimeout(
++        () => updateToken(embedSettings, report),
++        5000,
++      );
 +    }
 +    finally {
 +      embedSettings._refreshing = false;
@@ -147,7 +191,7 @@ index fd784bc..c27224f 100644
            return;
          }
  
-@@ -23,6 +112,7 @@
+@@ -23,6 +156,7 @@
          if (embedConfiguration.settings === undefined) {
            embedConfiguration.settings = {};
          }
@@ -155,7 +199,7 @@ index fd784bc..c27224f 100644
          // Get a reference to the HTML element that contains the embedded report.
          const powerBiEmbedParams = {
            embedConfiguration,
-@@ -33,37 +123,59 @@
+@@ -33,37 +167,65 @@
            detail: powerBiEmbedParams,
          });
          window.dispatchEvent(PowerBiPreEmbed);
@@ -176,26 +220,32 @@ index fd784bc..c27224f 100644
 -        report.on("rendered", () => {
 +        report.on('rendered', () => {
            window.dispatchEvent(PowerBiPostEmbed);
-+          // Start the token refresh polling on first render only. The `rendered`
-+          // event fires on every re-render (filters, drill-through, page turns)
-+          // so the _refreshScheduled guard prevents duplicate intervals stacking.
++          // Start precise token refresh scheduling on first render only. The
++          // `rendered` event fires on every re-render (filters, drill-through,
++          // page turns) so the _refreshScheduled guard prevents duplicate
++          // timers stacking.
 +          if (embedSettings.token_refresh_enabled && !embedSettings._refreshScheduled) {
 +            embedSettings._refreshScheduled = true;
 +
 +            // Seed tokenExpiration from the server-rendered value so the first
-+            // interval check has a baseline before any refresh has occurred.
++            // setTimeout has a baseline before any refresh has occurred.
 +            embedSettings.tokenExpiration = embedSettings.tokenExpirationDate;
 +
-+            // Poll every 30 seconds — matches Microsoft's recommended pattern.
-+            setInterval(() => {
-+              checkTokenAndUpdate(embedSettings, report);
-+            }, INTERVAL_TIME);
++            // Schedule the first refresh precisely at expiry + 500 ms.
++            scheduleNextRefresh(embedSettings, report);
 +
-+            // Also check immediately when the tab becomes visible again so a
-+            // token that expired while the tab was backgrounded is caught fast.
++            // Also check immediately when the tab becomes visible again — the
++            // browser may have throttled the setTimeout while backgrounded.
 +            document.addEventListener('visibilitychange', () => {
 +              if (!document.hidden) {
-+                checkTokenAndUpdate(embedSettings, report);
++                const msUntilExpiry = Date.parse(embedSettings.tokenExpiration) - Date.now();
++                if (msUntilExpiry <= 0) {
++                  // Already expired while tab was hidden — refresh immediately.
++                  updateToken(embedSettings, report);
++                } else {
++                  // Reschedule in case the timer drifted during background.
++                  scheduleNextRefresh(embedSettings, report);
++                }
 +              }
 +            });
 +          }
@@ -225,7 +275,7 @@ index fd784bc..c27224f 100644
          }
        });
        document.dispatchEvent(blockEmbedEvent);
-@@ -75,7 +187,7 @@
+@@ -75,7 +237,7 @@
        if (!settings.pwbi_flag) {
          const waitForGlobal = function (key, settings) {
            if (window[key]) {
@@ -234,7 +284,7 @@ index fd784bc..c27224f 100644
            } else {
              setTimeout(function () {
                waitForGlobal(key, settings);
-@@ -83,7 +195,7 @@
+@@ -83,7 +245,7 @@
            }
          };
          settings.pwbi_flag = true;
@@ -673,6 +723,212 @@ index 0000000..ff53f76
 +    }
 +
 +    return $element;
++  }
++
++}
+diff --git a/modules/pwbi_purge/tests/src/Functional/ConfigFormTest.php b/modules/pwbi_purge/tests/src/Functional/ConfigFormTest.php
+new file mode 100644
+index 0000000..feeb95d
+--- /dev/null
++++ b/modules/pwbi_purge/tests/src/Functional/ConfigFormTest.php
+@@ -0,0 +1,50 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Drupal\Tests\pwbi_purge\Functional;
++
++use Drupal\Core\Url;
++use Drupal\Tests\BrowserTestBase;
++
++/**
++ * Test for the purge configuration form.
++ */
++class ConfigFormTest extends BrowserTestBase {
++
++  /**
++   * {@inheritdoc}
++   */
++  protected static $modules = [
++    'pwbi_purge',
++  ];
++
++  /**
++   * {@inheritdoc}
++   */
++  protected $defaultTheme = 'stark';
++
++  /**
++   * Tests the form for the purge configuration.
++   */
++  public function testConfigFormP(): void {
++    $user = $this->drupalCreateUser([
++      'configure pwbi',
++    ]);
++
++    $assert_session = $this->assertSession();
++    $this->drupalGet(Url::fromRoute('pwbi_purge.settings'));
++    $assert_session->statusCodeEquals(403);
++    $this->drupalLogin($user);
++    $this->drupalGet(Url::fromRoute('pwbi_purge.settings'));
++    $assert_session->statusCodeEquals(200);
++    $assert_session->fieldExists('cron_window')->setValue(500);
++    $assert_session->buttonExists('Save configuration')->press();
++    $assert_session->statusMessageContains('The configuration options have been saved.', 'status');
++    $this->drupalGet(Url::fromRoute('pwbi_purge.settings'));
++    $assert_session->fieldValueEquals('cron_window', 500);
++
++    self::assertEquals(500, $this->config('pwbi_purge.settings')->get('cron_window'));
++  }
++
++}
+diff --git a/modules/pwbi_purge/tests/src/Kernel/PowerBiEmbedPurgeFormatterTest.php b/modules/pwbi_purge/tests/src/Kernel/PowerBiEmbedPurgeFormatterTest.php
+new file mode 100644
+index 0000000..e9dd93c
+--- /dev/null
++++ b/modules/pwbi_purge/tests/src/Kernel/PowerBiEmbedPurgeFormatterTest.php
+@@ -0,0 +1,144 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Drupal\Tests\pwbi_purge\Kernel;
++
++use Drupal\Core\CronInterface;
++use Drupal\purge\Plugin\Purge\Invalidation\TagInvalidation;
++use Drupal\Tests\pwbi\Kernel\PowerBiEmbedFormatterTest;
++
++/**
++ * @coversDefaultClass \Drupal\pwbi_purge\Plugin\Field\FieldFormatter\PowerBiEmbedPurgeFormatter
++ */
++class PowerBiEmbedPurgeFormatterTest extends PowerBiEmbedFormatterTest {
++
++  /**
++   * {@inheritdoc}
++   */
++  protected static $modules = [
++    'purge',
++    'purge_queuer_coretags',
++    'pwbi_purge',
++    'purge_purger_test',
++  ];
++
++  /**
++   * {@inheritdoc}
++   */
++  protected function setUp(): void {
++    parent::setUp();
++
++    $this->installConfig([
++      'purge',
++      'purge_queuer_coretags',
++      'pwbi_purge',
++    ]);
++
++    // Set up a test purger from purge_purger_test that can purge tags.
++    \Drupal::service('purge.purgers')->setPluginsEnabled(['good' => 'good']);
++  }
++
++  /**
++   * Override the inherited test with default values.
++   *
++   * @covers ::viewElements
++   */
++  public function testViewElements(): void {
++
++    $fixture = $this->createFixture();
++    $media = $fixture['media'];
++    $display = $fixture['display'];
++
++    /** @var \Drupal\Core\Entity\Entity\EntityViewDisplay $display */
++    $build = $display->build($media);
++    $this->assertNotNull($build['embed']);
++    $renderer = \Drupal::service('renderer');
++    $renderer->renderInIsolation($build['embed']);
++
++    // The default access token fixture minus the default cron window config.
++    $expected_max_age = 3599 - 960;
++    // Field contains the correct cache.
++    $this->assertSame(
++      [
++        'contexts' => [
++          'languages:language_interface',
++          'theme',
++          'user.permissions',
++        ],
++        'tags' => [
++          'pwbi_embed',
++          'config:pwbi.settings',
++        ],
++        'max-age' => $expected_max_age,
++      ],
++      $build['embed']['#cache'],
++    );
++
++    $expected_expiration = \Drupal::time()->getRequestTime() + $expected_max_age;
++    self::assertEquals($expected_expiration, (int) \Drupal::state()->get('pwbi_purge_expiration'));
++  }
++
++  /**
++   * Override the inherited test with default values.
++   *
++   * @covers ::viewElements
++   */
++  public function testAccessTokenReset(): void {
++
++    $this->config('pwbi_purge.settings')->set('cron_window', 963)->save();
++    // First value lower than the cron_window, the second is after reset.
++    \Drupal::state()->set('api_powerbi_com_access_token_expires', [500, 2599]);
++
++    $fixture = $this->createFixture();
++    $media = $fixture['media'];
++    $display = $fixture['display'];
++
++    /** @var \Drupal\Core\Entity\Entity\EntityViewDisplay $display */
++    $build = $display->build($media);
++    $this->assertNotNull($build['embed']);
++    $renderer = \Drupal::service('renderer');
++    $renderer->renderInIsolation($build['embed']);
++
++    // The access token fixture minus the cron window config.
++    $expected_max_age = 2599 - 963;
++    // Field contains the correct cache.
++    $this->assertSame(
++      [
++        'contexts' => [
++          'languages:language_interface',
++          'theme',
++          'user.permissions',
++        ],
++        'tags' => [
++          'pwbi_embed',
++          'config:pwbi.settings',
++        ],
++        'max-age' => $expected_max_age,
++      ],
++      $build['embed']['#cache'],
++    );
++
++    $expected_expiration = \Drupal::time()->getRequestTime() + $expected_max_age;
++    self::assertEquals($expected_expiration, (int) \Drupal::state()->get('pwbi_purge_expiration'));
++  }
++
++  /**
++   * Test that cron purges correctly.
++   *
++   * @covers \Drupal\pwbi_purge\Hook\PurgeHooks::purgeOnCron
++   */
++  public function testCron(): void {
++    // Set the expiration to the past.
++    \Drupal::state()->set('pwbi_purge_expiration', \Drupal::time()->getCurrentTime() - 100);
++    // Run cron, now the pwbi_embed tag should be purging.
++    \Drupal::service(CronInterface::class)->run();
++    // Claim the items.
++    $claims = \Drupal::service('purge.queue')->claim();
++    self::assertCount(1, $claims);
++    $claim = $claims[0];
++    self::assertInstanceOf(TagInvalidation::class, $claim);
++    self::assertEquals('pwbi_embed', $claim->getExpression());
 +  }
 +
 +}
