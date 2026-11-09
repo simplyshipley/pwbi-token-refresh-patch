@@ -32,6 +32,11 @@ approach in the spec. The live implementation uses `checkTokenAndUpdate` / `upda
 mirror Microsoft's reference docs. The spec in this document still shows the original `setTimeout` design —
 the live files (`pwbi/components/pwbi-embed/pwbi-embed.js`) are authoritative.
 
+> **Superseded 2026-03-03, noted 2026-11-09:** the shipped patch went back to a `setTimeout` that fires
+> `token_refresh_lead_ms` (default 1500) before expiry, then retries every 1 s until the expiry advances.
+> `token_refresh_minutes` and the route's CSRF requirement were removed, and a `debug_enabled` setting was added.
+> This handoff is the March 2 record; `TESTING.md` and `patches/pwbi-combined.patch` describe what shipped.
+
 **Pending:**
 - Apply patch to production deployment (pending OIG change management process)
 - Submit upstream to drupal.org/project/pwbi if appropriate
