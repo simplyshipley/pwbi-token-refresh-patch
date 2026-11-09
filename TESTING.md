@@ -21,7 +21,7 @@ This patch adds the following features to the `pwbi` Drupal module:
 | `src/PowerBiEmbed.php` | Returns `datasetId` in embed data so JS can pass it to the refresh endpoint |
 | `src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php` | Passes `workspaceId`, `datasetId`, and refresh settings into `drupalSettings`; sets render cache max-age to the time left on the embed token so a cached page never serves an expired token |
 | `src/Plugin/Oauth2Client/PwbiServicePrincipal.php` | Multi-cloud OAuth2 — all four endpoint URLs (authorization, token, resource_owner, scope) auto-swap based on `pwbi_api_endpoint` config |
-| `components/pwbi-embed/pwbi-embed.js` | Adds a `setTimeout` that fires `token_refresh_lead_ms` before expiry (`scheduleNextRefresh` / `updateToken`), retries every 1 s until the expiry advances, and re-checks on `visibilitychange`. If the page arrives with an expired token (for example a cached copy), it fetches a new token before embedding (retrying after 5 s on an error, after 1 s while the new token still expires within the lead time), so the report can render |
+| `components/pwbi-embed/pwbi-embed.js` | Adds a `setTimeout` that fires `token_refresh_lead_ms` before expiry (`scheduleNextRefresh` / `updateToken`), retries every 1 s until the expiry advances, and re-checks on `visibilitychange`. If the page arrives with an expired token (for example a cached copy), it fetches a new token before embedding (retrying every 5 s until Drupal answers), so the report can render |
 | `config/install/pwbi.settings.yml` | **New** — default config values |
 | `config/schema/pwbi.schema.yml` | Adds `pwbi.settings` schema |
 | `drush.services.yml` | **New** — registers Drush commands |

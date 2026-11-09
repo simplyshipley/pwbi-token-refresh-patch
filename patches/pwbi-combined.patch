@@ -1,8 +1,8 @@
 diff --git a/components/pwbi-embed/pwbi-embed.js b/components/pwbi-embed/pwbi-embed.js
-index fd784bc..819dddb 100644
+index fd784bc..c120fbd 100644
 --- a/components/pwbi-embed/pwbi-embed.js
 +++ b/components/pwbi-embed/pwbi-embed.js
-@@ -1,69 +1,326 @@
+@@ -1,28 +1,205 @@
  ((Drupal) => {
 +  // Default lead time (ms) before token expiry to fire the first refresh.
 +  // Overridden per-embed by embedSettings.token_refresh_lead_ms which is set
@@ -72,6 +72,30 @@ index fd784bc..819dddb 100644
 +      throw new Error('Token refresh response missing token');
 +    }
 +    return data;
++  }
++
++  /**
++   * Replace an expired page token before the report is embedded.
++   *
++   * A page can arrive with a token that has already expired, for example a
++   * copy cached before the token's expiry, and the report cannot render with
++   * it. Tries again every 5 s until Drupal answers with a new token.
++   *
++   * @param {object} embedSettings - drupalSettings entry for this report.
++   */
++  async function replaceExpiredPageToken(embedSettings) {
++    for (;;) {
++      try {
++        const data = await fetchToken(embedSettings);
++        embedSettings.accessToken = data.token;
++        embedSettings.tokenExpirationDate = data.expiration;
++        return;
++      }
++      catch (err) {
++        console.error('[pwbi] Token refresh failed:', err.message ?? err);
++        await new Promise((resolve) => setTimeout(resolve, 5000));
++      }
++    }
 +  }
 +
 +  /**
@@ -159,140 +183,11 @@ index fd784bc..819dddb 100644
 +    }
 +  }
 +
-+  /**
-+   * Whether a token expires within token_refresh_lead_ms (or has expired).
-+   *
-+   * @param {string} expiration - The token's expiry timestamp.
-+   * @param {object} embedSettings - drupalSettings entry for this report.
-+   * @return {boolean} TRUE when the token is expired, about to be, or unknown.
-+   */
-+  function tokenExpiresSoon(expiration, embedSettings) {
-+    const leadMs = embedSettings.token_refresh_lead_ms ?? DEFAULT_FIRE_BEFORE_EXPIRY_MS;
-+    return !(Date.parse(expiration) - Date.now() > leadMs);
-+  }
-+
-+  /**
-+   * Embed a report whose page token has expired, once a new token arrives.
-+   *
-+   * A page can arrive with an expired token, for example a copy cached before
-+   * the token's expiry, and the report cannot render with it. Retries like
-+   * updateToken(): after 5 s on an error, after 1 s when the new token still
-+   * expires within the lead time (Drupal has not renewed its OAuth token yet).
-+   *
-+   * @param {object} embedSettings - drupalSettings entry for this report.
-+   * @param {HTMLElement} embedContainer - The element to embed the report in.
-+   * @param {object} powerbiClient - The powerbi-client service.
-+   */
-+  async function embedWithFreshToken(embedSettings, embedContainer, powerbiClient) {
-+    const retry = (ms) => {
-+      embedSettings._refreshTimer = setTimeout(
-+        () => embedWithFreshToken(embedSettings, embedContainer, powerbiClient),
-+        ms,
-+      );
-+    };
-+    let data;
-+    try {
-+      data = await fetchToken(embedSettings);
-+    }
-+    catch (err) {
-+      console.error('[pwbi] Token refresh failed:', err.message ?? err);
-+      retry(5000);
-+      return;
-+    }
-+    if (tokenExpiresSoon(data.expiration, embedSettings)) {
-+      retry(1000);
-+      return;
-+    }
-+    if (embedSettings.debug_enabled) {
-+      console.log(`[pwbi] Page token expired (${embedSettings.tokenExpirationDate}); embedding with a new one that expires ${data.expiration}`);
-+    }
-+    embedSettings.accessToken = data.token;
-+    embedSettings.tokenExpirationDate = data.expiration;
-+    embedReport(embedSettings, embedContainer, powerbiClient);
-+  }
-+
-+  /**
-+   * Embed one report and start its token refresh once it has rendered.
-+   *
-+   * @param {object} embedSettings - drupalSettings entry for this report.
-+   * @param {HTMLElement} embedContainer - The element to embed the report in.
-+   * @param {object} powerbiClient - The powerbi-client service.
-+   */
-+  function embedReport(embedSettings, embedContainer, powerbiClient) {
-+    const embedConfiguration = embedSettings;
-+    if (embedConfiguration.settings === undefined) {
-+      embedConfiguration.settings = {};
-+    }
-+
-+    // Get a reference to the HTML element that contains the embedded report.
-+    const powerBiEmbedParams = {
-+      embedConfiguration,
-+      embedContainer,
-+    };
-+    // Embed the visual.
-+    const PowerBiPreEmbed = new CustomEvent('PowerBiPreEmbed', {
-+      detail: powerBiEmbedParams,
-+    });
-+    window.dispatchEvent(PowerBiPreEmbed);
-+    let report;
-+    try {
-+      report = powerbiClient.load(
-+        powerBiEmbedParams.embedContainer,
-+        powerBiEmbedParams.embedConfiguration,
-+      );
-+    }
-+    finally {
-+      // powerbiClient.embeds now holds this report (runEmbeds() checks it), or
-+      // load() threw; either way a later runEmbeds() may try again.
-+      embedSettings._embedPending = false;
-+    }
-+    const PowerBiPostEmbed = new CustomEvent('PowerBiPostEmbed', {
-+      detail: report,
-+    });
-+    report.on('loaded', () => {
-+      report.render();
-+    });
-+    report.on('rendered', () => {
-+      window.dispatchEvent(PowerBiPostEmbed);
-+      // Start precise token refresh scheduling on first render only. The
-+      // `rendered` event fires on every re-render (filters, drill-through,
-+      // page turns) so the _refreshScheduled guard prevents duplicate
-+      // timers stacking.
-+      if (embedSettings.token_refresh_enabled && !embedSettings._refreshScheduled) {
-+        embedSettings._refreshScheduled = true;
-+
-+        // Seed tokenExpiration from the server-rendered value so the first
-+        // setTimeout has a baseline before any refresh has occurred.
-+        embedSettings.tokenExpiration = embedSettings.tokenExpirationDate;
-+
-+        // Schedule the first refresh token_refresh_lead_ms ms before expiry.
-+        scheduleNextRefresh(embedSettings, report);
-+
-+        // Also check immediately when the tab becomes visible again — the
-+        // browser may have throttled the setTimeout while backgrounded.
-+        // Store the handler reference so detach() can remove it cleanly.
-+        embedSettings._visibilityHandler = () => {
-+          if (!document.hidden) {
-+            const msUntilExpiry = Date.parse(embedSettings.tokenExpiration) - Date.now();
-+            if (msUntilExpiry <= 0) {
-+              // Already expired while tab was hidden — refresh immediately.
-+              updateToken(embedSettings, report);
-+            } else {
-+              // Reschedule in case the timer drifted during background.
-+              scheduleNextRefresh(embedSettings, report);
-+            }
-+          }
-+        };
-+        document.addEventListener('visibilitychange', embedSettings._visibilityHandler);
-+      }
-+    });
-+  }
-+
    const pwbiEmbed = {
 -    runEmbeds(pwbi_embeds, powerbi) {
 -      Object.entries(pwbi_embeds).forEach((entry) => {
 +    runEmbeds(pwbiEmbeds, powerbiClient) {
-+      Object.entries(pwbiEmbeds).forEach((entry) => {
++      Object.entries(pwbiEmbeds).forEach(async (entry) => {
          const [key, embedSettings] = entry;
          const embedContainer = document.getElementById(embedSettings.id);
          // powerbi is the global object of the powerbi-client library.
@@ -303,52 +198,81 @@ index fd784bc..819dddb 100644
 -        }
 -        const arrayToken = embedSettings.accessToken.split(".");
 -        if (arrayToken.length < 2) {
--          return;
--        }
--        const tokenPayload = JSON.parse(atob(arrayToken[1]));
--        if (tokenPayload?.exp === undefined) {
 +        const alreadyEmbedded = Object.values(powerbiClient.embeds).some(
 +          (embed) => embed.element.id === embedSettings.id,
 +        );
-+        // _embedPending also covers a second call while a token is fetched.
-+        if (alreadyEmbedded || embedSettings._embedPending) {
++        if (alreadyEmbedded) {
            return;
          }
-+        embedSettings._embedPending = true;
- 
--        const embedConfiguration = embedSettings;
--        if (embedConfiguration.settings === undefined) {
--          embedConfiguration.settings = {};
-+        if (embedSettings.token_refresh_enabled && tokenExpiresSoon(embedSettings.tokenExpirationDate, embedSettings)) {
-+          embedWithFreshToken(embedSettings, embedContainer, powerbiClient);
-+        }
-+        else {
-+          embedReport(embedSettings, embedContainer, powerbiClient);
+-        const tokenPayload = JSON.parse(atob(arrayToken[1]));
+-        if (tokenPayload?.exp === undefined) {
+-          return;
++
++        if (embedSettings.token_refresh_enabled && !(Date.parse(embedSettings.tokenExpirationDate) > Date.now())) {
++          await replaceExpiredPageToken(embedSettings);
          }
--        // Get a reference to the HTML element that contains the embedded report.
--        const powerBiEmbedParams = {
--          embedConfiguration,
--          embedContainer,
--        };
--        // Embed the visual.
--        const PowerBiPreEmbed = new CustomEvent('PowerBiPreEmbed', {
--          detail: powerBiEmbedParams,
--        });
--        window.dispatchEvent(PowerBiPreEmbed);
+ 
+         const embedConfiguration = embedSettings;
+         if (embedConfiguration.settings === undefined) {
+           embedConfiguration.settings = {};
+         }
++
+         // Get a reference to the HTML element that contains the embedded report.
+         const powerBiEmbedParams = {
+           embedConfiguration,
+@@ -33,37 +210,67 @@
+           detail: powerBiEmbedParams,
+         });
+         window.dispatchEvent(PowerBiPreEmbed);
 -        const report = powerbi.load(
--          powerBiEmbedParams.embedContainer,
--          powerBiEmbedParams.embedConfiguration,
--        );
++        const report = powerbiClient.load(
+           powerBiEmbedParams.embedContainer,
+           powerBiEmbedParams.embedConfiguration,
+         );
 -        // Embed the visual.
 -        const PowerBiPostEmbed = new CustomEvent("PowerBiPostEmbed", {
--          detail: report,
--        });
++        const PowerBiPostEmbed = new CustomEvent('PowerBiPostEmbed', {
+           detail: report,
+         });
 -        report.on("loaded", () => {
--          report.render();
--        });
++        report.on('loaded', () => {
+           report.render();
+         });
 -        report.on("rendered", () => {
--          window.dispatchEvent(PowerBiPostEmbed);
--        });
++        report.on('rendered', () => {
+           window.dispatchEvent(PowerBiPostEmbed);
++          // Start precise token refresh scheduling on first render only. The
++          // `rendered` event fires on every re-render (filters, drill-through,
++          // page turns) so the _refreshScheduled guard prevents duplicate
++          // timers stacking.
++          if (embedSettings.token_refresh_enabled && !embedSettings._refreshScheduled) {
++            embedSettings._refreshScheduled = true;
++
++            // Seed tokenExpiration from the server-rendered value so the first
++            // setTimeout has a baseline before any refresh has occurred.
++            embedSettings.tokenExpiration = embedSettings.tokenExpirationDate;
++
++            // Schedule the first refresh token_refresh_lead_ms ms before expiry.
++            scheduleNextRefresh(embedSettings, report);
++
++            // Also check immediately when the tab becomes visible again — the
++            // browser may have throttled the setTimeout while backgrounded.
++            // Store the handler reference so detach() can remove it cleanly.
++            embedSettings._visibilityHandler = () => {
++              if (!document.hidden) {
++                const msUntilExpiry = Date.parse(embedSettings.tokenExpiration) - Date.now();
++                if (msUntilExpiry <= 0) {
++                  // Already expired while tab was hidden — refresh immediately.
++                  updateToken(embedSettings, report);
++                } else {
++                  // Reschedule in case the timer drifted during background.
++                  scheduleNextRefresh(embedSettings, report);
++                }
++              }
++            };
++            document.addEventListener('visibilitychange', embedSettings._visibilityHandler);
++          }
+         });
        });
      },
 -    setEvents(settings, powerbi) {
@@ -374,7 +298,7 @@ index fd784bc..819dddb 100644
          }
        });
        document.dispatchEvent(blockEmbedEvent);
-@@ -75,7 +332,7 @@
+@@ -75,7 +282,7 @@
        if (!settings.pwbi_flag) {
          const waitForGlobal = function (key, settings) {
            if (window[key]) {
@@ -383,7 +307,7 @@ index fd784bc..819dddb 100644
            } else {
              setTimeout(function () {
                waitForGlobal(key, settings);
-@@ -83,9 +340,16 @@
+@@ -83,9 +290,16 @@
            }
          };
          settings.pwbi_flag = true;
