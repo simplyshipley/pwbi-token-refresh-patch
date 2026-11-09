@@ -19,7 +19,7 @@ This patch adds the following features to the `pwbi` Drupal module:
 | `src/Controller/PwbiTokenRefreshController.php` | **New** — JSON endpoint that issues a fresh embed token |
 | `src/Commands/PwbiCommands.php` | **New** — Drush commands: `pwbi:auth-check`, `pwbi:flush-token`, `pwbi:list-reports`, `pwbi:token-refresh` |
 | `src/PowerBiEmbed.php` | Returns `datasetId` in embed data so JS can pass it to the refresh endpoint |
-| `src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php` | Passes `workspaceId`, `datasetId`, and refresh settings into `drupalSettings`; sets render cache max-age to the time left on the embed token so a cached page never serves an expired token |
+| `src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php` | Passes `workspaceId`, `datasetId`, and refresh settings into `drupalSettings`; sets render cache max-age to the time left on the embed token so a cached page never serves an expired token; attaches the token's absolute expiry as `X-Pwbi-Token-Expires` |
 | `src/Plugin/Oauth2Client/PwbiServicePrincipal.php` | Multi-cloud OAuth2 — all four endpoint URLs (authorization, token, resource_owner, scope) auto-swap based on `pwbi_api_endpoint` config |
 | `components/pwbi-embed/pwbi-embed.js` | Adds a `setTimeout` that fires `token_refresh_lead_ms` before expiry (`scheduleNextRefresh` / `updateToken`), retries every 1 s until the expiry advances, and re-checks on `visibilitychange`. If the page arrives with an expired token (for example a cached copy), it fetches a new token before embedding (retrying every 5 s until Drupal answers), so the report can render |
 | `config/install/pwbi.settings.yml` | **New** — default config values |
@@ -27,7 +27,7 @@ This patch adds the following features to the `pwbi` Drupal module:
 | `drush.services.yml` | **New** — registers Drush commands |
 | `pwbi.permissions.yml` | Adds `view pwbi embed token` permission for the refresh endpoint |
 | `pwbi.routing.yml` | Adds `/pwbi/token-refresh/{workspace_id}/{report_id}` route |
-| `src/EventSubscriber/PwbiResponseSubscriber.php` | Runs at priority -10, after core's `FinishResponseSubscriber`, so the page's `Expires` stays at the embed token's expiry and the page cache drops the page when the token expires |
+| `src/EventSubscriber/PwbiResponseSubscriber.php` | Runs at priority -10, after core's `FinishResponseSubscriber`, and sets the page's `Expires` and `max-age` from the earliest token on the page (each embed reports its token's expiry in an internal `X-Pwbi-Token-Expires` header, which is removed before the response is sent). The page cache drops the page when that token expires |
 | `src/PageCache/DenyPowerBiEmbedPages.php` + `pwbi.services.yml` | **New** -- page cache response policy: a page tagged `pwbi_embed` is not stored when its `Expires` is missing or in the past, because the page cache would then keep it, and its expired token, until a cache clear |
 | `tests/src/Unit/` | **New** -- unit tests for the policy, the subscriber's priority and `Expires`, and `connect()` without a token |
 

@@ -1355,30 +1355,76 @@ index 0000000..b177bf8
 +
 +}
 diff --git a/src/EventSubscriber/PwbiResponseSubscriber.php b/src/EventSubscriber/PwbiResponseSubscriber.php
-index 610430c..f54964b 100644
+index 610430c..10ce0c1 100644
 --- a/src/EventSubscriber/PwbiResponseSubscriber.php
 +++ b/src/EventSubscriber/PwbiResponseSubscriber.php
-@@ -32,7 +32,10 @@ class PwbiResponseSubscriber implements EventSubscriberInterface {
+@@ -22,6 +22,11 @@ use Symfony\Component\HttpKernel\KernelEvents;
+  */
+ class PwbiResponseSubscriber implements EventSubscriberInterface {
+ 
++  /**
++   * Response header each embed sets to its token's expiry (Unix time).
++   */
++  public const TOKEN_EXPIRES_HEADER = 'X-Pwbi-Token-Expires';
++
+   public function __construct(
+     protected TimeInterface $time,
+     protected AccountInterface $user,
+@@ -32,35 +37,43 @@ class PwbiResponseSubscriber implements EventSubscriberInterface {
     * {@inheritdoc}
     */
    public static function getSubscribedEvents() {
 -    $events[KernelEvents::RESPONSE][] = ['onResponse'];
 +    // Run after core's FinishResponseSubscriber (priority 0), which sets
-+    // Expires to 1978 when the site's page max age is 0; the page cache would
-+    // then keep the page, and its expired token, until a cache clear.
++    // Expires to 1978 on responses it does not treat as cacheable (including
++    // these pages, which DenyPowerBiEmbedPages refuses while they have no
++    // Expires yet); the page cache would keep such a page, and its expired
++    // token, until a cache clear.
 +    $events[KernelEvents::RESPONSE][] = ['onResponse', -10];
      return $events;
    }
  
-@@ -57,7 +60,7 @@ class PwbiResponseSubscriber implements EventSubscriberInterface {
+   /**
+-   * Sets expires and max-age for bubbled-up max-age values that are > 0.
++   * Sets Expires and max-age to the expiry of the page's earliest token.
+    *
+    * @param \Symfony\Component\HttpKernel\Event\ResponseEvent $event
+    *   The response event.
+    */
+   public function onResponse(ResponseEvent $event) {
+-    if (!$event->isMainRequest() || $this->user->isAuthenticated()) {
++    $response = $event->getResponse();
++    $expiries = array_map('intval', $response->headers->all(strtolower(self::TOKEN_EXPIRES_HEADER)));
++    $response->headers->remove(self::TOKEN_EXPIRES_HEADER);
++
++    if (!$event->isMainRequest() || $this->user->isAuthenticated() || !$expiries) {
+       return;
+     }
+-
+-    $response = $event->getResponse();
+     if (!($response instanceof CacheableResponseInterface)) {
+       return;
+     }
+-    $cache = $response->getCacheableMetadata();
+-    if (!in_array('pwbi_embed', $cache->getCacheTags())) {
++    if (!in_array('pwbi_embed', $response->getCacheableMetadata()->getCacheTags())) {
+       return;
      }
  
-     $max_age = (int) $cache->getCacheMaxAge();
+-    $max_age = (int) $cache->getCacheMaxAge();
 -    if ($max_age !== Cache::PERMANENT) {
++    // The earliest token on the page decides; a render cache hit can carry
++    // a max-age older than the token's real remaining time.
++    $expires = min($expiries);
++    $max_age = $expires - $this->time->getRequestTime();
 +    if ($max_age > 0) {
        $response->setMaxAge($max_age);
-       $date = new \DateTime('@' . ($this->time->getRequestTime() + $max_age));
-       $response->setExpires($date);
+-      $date = new \DateTime('@' . ($this->time->getRequestTime() + $max_age));
+-      $response->setExpires($date);
++      $response->setExpires(new \DateTime('@' . $expires));
+     }
+   }
+ 
 diff --git a/src/Form/PowerBiEmbedConfigForm.php b/src/Form/PowerBiEmbedConfigForm.php
 index 5c2b2e7..cf17ad1 100644
 --- a/src/Form/PowerBiEmbedConfigForm.php
@@ -1606,10 +1652,10 @@ index 0000000..9dd5f8a
 +
 +}
 diff --git a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php b/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
-index 0876f69..02ad61b 100644
+index 0876f69..01462b7 100644
 --- a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
 +++ b/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
-@@ -5,6 +5,9 @@ declare(strict_types=1);
+@@ -5,11 +5,15 @@ declare(strict_types=1);
  namespace Drupal\pwbi\Plugin\Field\FieldFormatter;
  
  use Drupal\breakpoint\BreakpointManager;
@@ -1619,7 +1665,13 @@ index 0876f69..02ad61b 100644
  use Drupal\Core\Datetime\DrupalDateTime;
  use Drupal\Core\Field\FieldDefinitionInterface;
  use Drupal\Core\Field\FieldItemListInterface;
-@@ -42,12 +45,14 @@ class PowerBiEmbedFormatter extends FormatterBase {
+ use Drupal\Core\Field\FormatterBase;
+ use Drupal\pwbi\Event\PwbiEmbedOverlaysEvent;
++use Drupal\pwbi\EventSubscriber\PwbiResponseSubscriber;
+ use Drupal\pwbi\Plugin\Field\FieldType\PowerBiEmbedField;
+ use Drupal\pwbi\PowerBiEmbed;
+ use Drupal\pwbi\Traits\PowerBiLangTrait;
+@@ -42,12 +46,14 @@ class PowerBiEmbedFormatter extends FormatterBase {
      protected PowerBiEmbed $pwbiEmbed,
      protected BreakpointManager $breakpointManager,
      protected EventDispatcherInterface $dispatcher,
@@ -1635,7 +1687,7 @@ index 0876f69..02ad61b 100644
     */
    public static function create(ContainerInterface $container, array $configuration, $plugin_id, $plugin_definition): static {
      // @phpstan-ignore-next-line
-@@ -62,6 +67,8 @@ class PowerBiEmbedFormatter extends FormatterBase {
+@@ -62,6 +68,8 @@ class PowerBiEmbedFormatter extends FormatterBase {
        $container->get('pwbi_embed.embed'),
        $container->get('breakpoint.manager'),
        $container->get('event_dispatcher'),
@@ -1644,7 +1696,7 @@ index 0876f69..02ad61b 100644
      );
    }
  
-@@ -76,6 +83,12 @@ class PowerBiEmbedFormatter extends FormatterBase {
+@@ -76,6 +84,12 @@ class PowerBiEmbedFormatter extends FormatterBase {
      $this->dispatcher->dispatch($overlays_event, PwbiEmbedOverlaysEvent::PWBI_OVERLAYS);
      $overlay_top = $overlays_event->overlay_top ?? [];
      $overlay_blocking = $overlays_event->overlay_blocking ?? [];
@@ -1657,7 +1709,7 @@ index 0876f69..02ad61b 100644
      foreach ($items as $item) {
        $report_id = $item->getValue()['report_id'];
        $workspace = $item->getValue()['workspace_id'];
-@@ -84,16 +97,23 @@ class PowerBiEmbedFormatter extends FormatterBase {
+@@ -84,16 +98,23 @@ class PowerBiEmbedFormatter extends FormatterBase {
        $report_height_units = $item->getValue()['report_height_units'];
        $report_width_units = $item->getValue()['report_width_units'];
        $report_configuration = $this->pwbiEmbed->getEmbedDataFromApi($workspace, $report_id);
@@ -1685,7 +1737,7 @@ index 0876f69..02ad61b 100644
          ],
          '#type' => 'component',
          '#component' => 'pwbi:pwbi-embed',
-@@ -108,7 +128,7 @@ class PowerBiEmbedFormatter extends FormatterBase {
+@@ -108,10 +129,16 @@ class PowerBiEmbedFormatter extends FormatterBase {
          '#attached' => [
            'drupalSettings' => [
              'pwbi_embed' => [
@@ -1694,7 +1746,16 @@ index 0876f69..02ad61b 100644
              ],
              'language' => $langcode,
            ],
-@@ -175,20 +195,31 @@ class PowerBiEmbedFormatter extends FormatterBase {
++          // The token's absolute expiry. A render cache hit replays the
++          // max-age above as it was when this was built, so
++          // PwbiResponseSubscriber caps the page's Expires with this instead.
++          'http_header' => [
++            [PwbiResponseSubscriber::TOKEN_EXPIRES_HEADER, (string) $token_expiration->getTimestamp(), FALSE],
++          ],
+         ],
+       ];
+       if (!empty($overlay_top)) {
+@@ -175,20 +202,31 @@ class PowerBiEmbedFormatter extends FormatterBase {
     * @return array <mixed>
     *   The options that will be used to embed a powerbi report.
     */
@@ -2652,10 +2713,10 @@ index 0000000..4e8b1f4
 +}
 diff --git a/tests/src/Unit/PwbiResponseSubscriberTest.php b/tests/src/Unit/PwbiResponseSubscriberTest.php
 new file mode 100644
-index 0000000..f87baa5
+index 0000000..72b5e31
 --- /dev/null
 +++ b/tests/src/Unit/PwbiResponseSubscriberTest.php
-@@ -0,0 +1,66 @@
+@@ -0,0 +1,75 @@
 +<?php
 +
 +declare(strict_types=1);
@@ -2703,22 +2764,31 @@ index 0000000..f87baa5
 +  }
 +
 +  /**
-+   * Core's past Expires on an anonymous embed page becomes the token expiry.
++   * Expires follows the earliest token, not a replayed max-age.
++   *
++   * Core's past Expires is replaced; the bubbled max-age (3600, as replayed
++   * from a render cache hit) is ignored in favor of the tokens' own expiry,
++   * and the internal header is not sent.
 +   */
-+  public function testReplacesCoreExpiresWithTokenExpiry(): void {
++  public function testExpiresFollowsEarliestToken(): void {
++    $now = 1_800_000_000;
 +    $time = $this->createMock(TimeInterface::class);
-+    $time->method('getRequestTime')->willReturn(1_800_000_000);
++    $time->method('getRequestTime')->willReturn($now);
 +    $user = $this->createMock(AccountInterface::class);
 +    $user->method('isAuthenticated')->willReturn(FALSE);
 +
 +    $response = new CacheableResponse('page');
-+    $response->addCacheableDependency((new CacheableMetadata())->setCacheTags(['pwbi_embed'])->setCacheMaxAge(1200));
++    $response->addCacheableDependency((new CacheableMetadata())->setCacheTags(['pwbi_embed'])->setCacheMaxAge(3600));
 +    $response->setExpires(new \DateTime('@280299600'));
++    $response->headers->set(PwbiResponseSubscriber::TOKEN_EXPIRES_HEADER, (string) ($now + 1200), FALSE);
++    $response->headers->set(PwbiResponseSubscriber::TOKEN_EXPIRES_HEADER, (string) ($now + 300), FALSE);
 +
 +    $event = new ResponseEvent($this->createMock(HttpKernelInterface::class), new Request(), HttpKernelInterface::MAIN_REQUEST, $response);
 +    (new PwbiResponseSubscriber($time, $user))->onResponse($event);
 +
-+    $this->assertSame(1_800_000_000 + 1200, $response->getExpires()->getTimestamp());
++    $this->assertSame($now + 300, $response->getExpires()->getTimestamp());
++    $this->assertSame(300, $response->getMaxAge());
++    $this->assertFalse($response->headers->has(PwbiResponseSubscriber::TOKEN_EXPIRES_HEADER));
 +  }
 +
 +}
