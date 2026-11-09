@@ -1,8 +1,8 @@
 diff --git a/components/pwbi-embed/pwbi-embed.js b/components/pwbi-embed/pwbi-embed.js
-index fd784bc..507bf6b 100644
+index fd784bc..819dddb 100644
 --- a/components/pwbi-embed/pwbi-embed.js
 +++ b/components/pwbi-embed/pwbi-embed.js
-@@ -1,21 +1,172 @@
+@@ -1,69 +1,326 @@
  ((Drupal) => {
 +  // Default lead time (ms) before token expiry to fire the first refresh.
 +  // Overridden per-embed by embedSettings.token_refresh_lead_ms which is set
@@ -51,6 +51,30 @@ index fd784bc..507bf6b 100644
 +  }
 +
 +  /**
++   * Ask Drupal for a new embed token.
++   *
++   * @param {object} embedSettings - drupalSettings entry for this report.
++   * @return {Promise<{token: string, expiration: string}>} The new token.
++   * @throws {Error} When the request fails or holds no token.
++   */
++  async function fetchToken(embedSettings) {
++    const { workspaceId, id: reportId, datasetId } = embedSettings;
++    const base = drupalSettings.path.baseUrl;
++    const refreshUrl = `${base}pwbi/token-refresh/${workspaceId}/${reportId}?dataset_id=${encodeURIComponent(datasetId)}`;
++    const response = await fetch(refreshUrl, {
++      headers: { 'Accept': 'application/json' },
++    });
++    if (!response.ok) {
++      throw new Error(`Token refresh HTTP error ${response.status}`);
++    }
++    const data = await response.json();
++    if (!data.token) {
++      throw new Error('Token refresh response missing token');
++    }
++    return data;
++  }
++
++  /**
 +   * Fetch a fresh embed token from Drupal and apply it to the live report.
 +   *
 +   * Passes the report object directly (captured from powerbiClient.load()) so
@@ -68,36 +92,8 @@ index fd784bc..507bf6b 100644
 +    }
 +    embedSettings._refreshing = true;
 +
-+    const { workspaceId, id: reportId, datasetId } = embedSettings;
-+    const base = drupalSettings.path.baseUrl;
-+    const refreshUrl = `${base}pwbi/token-refresh/${workspaceId}/${reportId}?dataset_id=${encodeURIComponent(datasetId)}`;
-+
 +    try {
-+      const response = await fetch(refreshUrl, {
-+        headers: { 'Accept': 'application/json' },
-+      });
-+
-+      if (!response.ok) {
-+        console.error('[pwbi] Token refresh HTTP error', response.status);
-+        // Retry in 5 s on HTTP errors.
-+        embedSettings._refreshTimer = setTimeout(
-+          () => updateToken(embedSettings, report),
-+          5000,
-+        );
-+        return;
-+      }
-+
-+      const data = await response.json();
-+      if (!data.token) {
-+        console.error('[pwbi] Token refresh response missing token');
-+        // Retry in 5 s — a bare return here would permanently kill token
-+        // refresh for this embed with no recovery path.
-+        embedSettings._refreshTimer = setTimeout(
-+          () => updateToken(embedSettings, report),
-+          5000,
-+        );
-+        return;
-+      }
++      const data = await fetchToken(embedSettings);
 +
 +      const oldExpiration = embedSettings.tokenExpiration;
 +      const expirationChanged = oldExpiration !== data.expiration;
@@ -150,8 +146,9 @@ index fd784bc..507bf6b 100644
 +      }
 +    }
 +    catch (err) {
-+      console.error('[pwbi] Token refresh failed', err);
-+      // Retry in 5 s on network errors.
++      console.error('[pwbi] Token refresh failed:', err.message ?? err);
++      // Retry in 5 s on HTTP, missing-token, network and setAccessToken errors;
++      // a bare return would end token refresh for this embed for good.
 +      embedSettings._refreshTimer = setTimeout(
 +        () => updateToken(embedSettings, report),
 +        5000,
@@ -160,6 +157,135 @@ index fd784bc..507bf6b 100644
 +    finally {
 +      embedSettings._refreshing = false;
 +    }
++  }
++
++  /**
++   * Whether a token expires within token_refresh_lead_ms (or has expired).
++   *
++   * @param {string} expiration - The token's expiry timestamp.
++   * @param {object} embedSettings - drupalSettings entry for this report.
++   * @return {boolean} TRUE when the token is expired, about to be, or unknown.
++   */
++  function tokenExpiresSoon(expiration, embedSettings) {
++    const leadMs = embedSettings.token_refresh_lead_ms ?? DEFAULT_FIRE_BEFORE_EXPIRY_MS;
++    return !(Date.parse(expiration) - Date.now() > leadMs);
++  }
++
++  /**
++   * Embed a report whose page token has expired, once a new token arrives.
++   *
++   * A page can arrive with an expired token, for example a copy cached before
++   * the token's expiry, and the report cannot render with it. Retries like
++   * updateToken(): after 5 s on an error, after 1 s when the new token still
++   * expires within the lead time (Drupal has not renewed its OAuth token yet).
++   *
++   * @param {object} embedSettings - drupalSettings entry for this report.
++   * @param {HTMLElement} embedContainer - The element to embed the report in.
++   * @param {object} powerbiClient - The powerbi-client service.
++   */
++  async function embedWithFreshToken(embedSettings, embedContainer, powerbiClient) {
++    const retry = (ms) => {
++      embedSettings._refreshTimer = setTimeout(
++        () => embedWithFreshToken(embedSettings, embedContainer, powerbiClient),
++        ms,
++      );
++    };
++    let data;
++    try {
++      data = await fetchToken(embedSettings);
++    }
++    catch (err) {
++      console.error('[pwbi] Token refresh failed:', err.message ?? err);
++      retry(5000);
++      return;
++    }
++    if (tokenExpiresSoon(data.expiration, embedSettings)) {
++      retry(1000);
++      return;
++    }
++    if (embedSettings.debug_enabled) {
++      console.log(`[pwbi] Page token expired (${embedSettings.tokenExpirationDate}); embedding with a new one that expires ${data.expiration}`);
++    }
++    embedSettings.accessToken = data.token;
++    embedSettings.tokenExpirationDate = data.expiration;
++    embedReport(embedSettings, embedContainer, powerbiClient);
++  }
++
++  /**
++   * Embed one report and start its token refresh once it has rendered.
++   *
++   * @param {object} embedSettings - drupalSettings entry for this report.
++   * @param {HTMLElement} embedContainer - The element to embed the report in.
++   * @param {object} powerbiClient - The powerbi-client service.
++   */
++  function embedReport(embedSettings, embedContainer, powerbiClient) {
++    const embedConfiguration = embedSettings;
++    if (embedConfiguration.settings === undefined) {
++      embedConfiguration.settings = {};
++    }
++
++    // Get a reference to the HTML element that contains the embedded report.
++    const powerBiEmbedParams = {
++      embedConfiguration,
++      embedContainer,
++    };
++    // Embed the visual.
++    const PowerBiPreEmbed = new CustomEvent('PowerBiPreEmbed', {
++      detail: powerBiEmbedParams,
++    });
++    window.dispatchEvent(PowerBiPreEmbed);
++    let report;
++    try {
++      report = powerbiClient.load(
++        powerBiEmbedParams.embedContainer,
++        powerBiEmbedParams.embedConfiguration,
++      );
++    }
++    finally {
++      // powerbiClient.embeds now holds this report (runEmbeds() checks it), or
++      // load() threw; either way a later runEmbeds() may try again.
++      embedSettings._embedPending = false;
++    }
++    const PowerBiPostEmbed = new CustomEvent('PowerBiPostEmbed', {
++      detail: report,
++    });
++    report.on('loaded', () => {
++      report.render();
++    });
++    report.on('rendered', () => {
++      window.dispatchEvent(PowerBiPostEmbed);
++      // Start precise token refresh scheduling on first render only. The
++      // `rendered` event fires on every re-render (filters, drill-through,
++      // page turns) so the _refreshScheduled guard prevents duplicate
++      // timers stacking.
++      if (embedSettings.token_refresh_enabled && !embedSettings._refreshScheduled) {
++        embedSettings._refreshScheduled = true;
++
++        // Seed tokenExpiration from the server-rendered value so the first
++        // setTimeout has a baseline before any refresh has occurred.
++        embedSettings.tokenExpiration = embedSettings.tokenExpirationDate;
++
++        // Schedule the first refresh token_refresh_lead_ms ms before expiry.
++        scheduleNextRefresh(embedSettings, report);
++
++        // Also check immediately when the tab becomes visible again — the
++        // browser may have throttled the setTimeout while backgrounded.
++        // Store the handler reference so detach() can remove it cleanly.
++        embedSettings._visibilityHandler = () => {
++          if (!document.hidden) {
++            const msUntilExpiry = Date.parse(embedSettings.tokenExpiration) - Date.now();
++            if (msUntilExpiry <= 0) {
++              // Already expired while tab was hidden — refresh immediately.
++              updateToken(embedSettings, report);
++            } else {
++              // Reschedule in case the timer drifted during background.
++              scheduleNextRefresh(embedSettings, report);
++            }
++          }
++        };
++        document.addEventListener('visibilitychange', embedSettings._visibilityHandler);
++      }
++    });
 +  }
 +
    const pwbiEmbed = {
@@ -184,71 +310,45 @@ index fd784bc..507bf6b 100644
 +        const alreadyEmbedded = Object.values(powerbiClient.embeds).some(
 +          (embed) => embed.element.id === embedSettings.id,
 +        );
-+        if (alreadyEmbedded) {
++        // _embedPending also covers a second call while a token is fetched.
++        if (alreadyEmbedded || embedSettings._embedPending) {
            return;
          }
++        embedSettings._embedPending = true;
  
-@@ -23,6 +174,7 @@
-         if (embedConfiguration.settings === undefined) {
-           embedConfiguration.settings = {};
+-        const embedConfiguration = embedSettings;
+-        if (embedConfiguration.settings === undefined) {
+-          embedConfiguration.settings = {};
++        if (embedSettings.token_refresh_enabled && tokenExpiresSoon(embedSettings.tokenExpirationDate, embedSettings)) {
++          embedWithFreshToken(embedSettings, embedContainer, powerbiClient);
++        }
++        else {
++          embedReport(embedSettings, embedContainer, powerbiClient);
          }
-+
-         // Get a reference to the HTML element that contains the embedded report.
-         const powerBiEmbedParams = {
-           embedConfiguration,
-@@ -33,37 +185,67 @@
-           detail: powerBiEmbedParams,
-         });
-         window.dispatchEvent(PowerBiPreEmbed);
+-        // Get a reference to the HTML element that contains the embedded report.
+-        const powerBiEmbedParams = {
+-          embedConfiguration,
+-          embedContainer,
+-        };
+-        // Embed the visual.
+-        const PowerBiPreEmbed = new CustomEvent('PowerBiPreEmbed', {
+-          detail: powerBiEmbedParams,
+-        });
+-        window.dispatchEvent(PowerBiPreEmbed);
 -        const report = powerbi.load(
-+        const report = powerbiClient.load(
-           powerBiEmbedParams.embedContainer,
-           powerBiEmbedParams.embedConfiguration,
-         );
+-          powerBiEmbedParams.embedContainer,
+-          powerBiEmbedParams.embedConfiguration,
+-        );
 -        // Embed the visual.
 -        const PowerBiPostEmbed = new CustomEvent("PowerBiPostEmbed", {
-+        const PowerBiPostEmbed = new CustomEvent('PowerBiPostEmbed', {
-           detail: report,
-         });
+-          detail: report,
+-        });
 -        report.on("loaded", () => {
-+        report.on('loaded', () => {
-           report.render();
-         });
+-          report.render();
+-        });
 -        report.on("rendered", () => {
-+        report.on('rendered', () => {
-           window.dispatchEvent(PowerBiPostEmbed);
-+          // Start precise token refresh scheduling on first render only. The
-+          // `rendered` event fires on every re-render (filters, drill-through,
-+          // page turns) so the _refreshScheduled guard prevents duplicate
-+          // timers stacking.
-+          if (embedSettings.token_refresh_enabled && !embedSettings._refreshScheduled) {
-+            embedSettings._refreshScheduled = true;
-+
-+            // Seed tokenExpiration from the server-rendered value so the first
-+            // setTimeout has a baseline before any refresh has occurred.
-+            embedSettings.tokenExpiration = embedSettings.tokenExpirationDate;
-+
-+            // Schedule the first refresh token_refresh_lead_ms ms before expiry.
-+            scheduleNextRefresh(embedSettings, report);
-+
-+            // Also check immediately when the tab becomes visible again — the
-+            // browser may have throttled the setTimeout while backgrounded.
-+            // Store the handler reference so detach() can remove it cleanly.
-+            embedSettings._visibilityHandler = () => {
-+              if (!document.hidden) {
-+                const msUntilExpiry = Date.parse(embedSettings.tokenExpiration) - Date.now();
-+                if (msUntilExpiry <= 0) {
-+                  // Already expired while tab was hidden — refresh immediately.
-+                  updateToken(embedSettings, report);
-+                } else {
-+                  // Reschedule in case the timer drifted during background.
-+                  scheduleNextRefresh(embedSettings, report);
-+                }
-+              }
-+            };
-+            document.addEventListener('visibilitychange', embedSettings._visibilityHandler);
-+          }
-         });
+-          window.dispatchEvent(PowerBiPostEmbed);
+-        });
        });
      },
 -    setEvents(settings, powerbi) {
@@ -274,7 +374,7 @@ index fd784bc..507bf6b 100644
          }
        });
        document.dispatchEvent(blockEmbedEvent);
-@@ -75,7 +257,7 @@
+@@ -75,7 +332,7 @@
        if (!settings.pwbi_flag) {
          const waitForGlobal = function (key, settings) {
            if (window[key]) {
@@ -283,7 +383,7 @@ index fd784bc..507bf6b 100644
            } else {
              setTimeout(function () {
                waitForGlobal(key, settings);
-@@ -83,9 +265,16 @@
+@@ -83,9 +340,16 @@
            }
          };
          settings.pwbi_flag = true;
@@ -403,7 +503,7 @@ index 020547c..6f9a893 100644
 +    workspace_id: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
 +    report_id: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
 diff --git a/pwbi.services.yml b/pwbi.services.yml
-index 2bd86b4..9a1e83d 100644
+index 2bd86b4..8dd89a7 100644
 --- a/pwbi.services.yml
 +++ b/pwbi.services.yml
 @@ -7,11 +7,11 @@ services:
@@ -420,6 +520,19 @@ index 2bd86b4..9a1e83d 100644
  
    pwbi.cert_manager:
      class: '\Drupal\pwbi\Cert\CertificateManager'
+@@ -21,6 +21,12 @@ services:
+     class: '\Drupal\pwbi\Oauth2Form\FormChanges'
+     arguments: ['@pwbi.cert_manager']
+ 
++  pwbi.page_cache_response_policy.deny_embeds:
++    class: Drupal\pwbi\PageCache\DenyPowerBiEmbedPages
++    public: false
++    tags:
++      - { name: page_cache_response_policy }
++
+   pwbi.pwbi_cache_response_subscriber:
+     class: Drupal\pwbi\EventSubscriber\PwbiResponseSubscriber
+     arguments: ['@datetime.time', '@current_user']
 diff --git a/src/Api/PowerBiClient.php b/src/Api/PowerBiClient.php
 index 34987a1..31d63d1 100644
 --- a/src/Api/PowerBiClient.php
@@ -1496,6 +1609,46 @@ index 5c2b2e7..cf17ad1 100644
    }
  
  }
+diff --git a/src/PageCache/DenyPowerBiEmbedPages.php b/src/PageCache/DenyPowerBiEmbedPages.php
+new file mode 100644
+index 0000000..9695bf9
+--- /dev/null
++++ b/src/PageCache/DenyPowerBiEmbedPages.php
+@@ -0,0 +1,34 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Drupal\pwbi\PageCache;
++
++use Drupal\Core\Cache\CacheableResponseInterface;
++use Drupal\Core\PageCache\ResponsePolicyInterface;
++use Symfony\Component\HttpFoundation\Request;
++use Symfony\Component\HttpFoundation\Response;
++
++/**
++ * Keeps pages with a Power BI embed out of the internal page cache.
++ *
++ * The internal page cache ignores max-age and keeps a page until one of its
++ * cache tags is invalidated, so a cached page would go on serving its embed
++ * token after the token expires. The embed's own render cache still expires
++ * with the token, so a page view does not ask Power BI for a new token each
++ * time.
++ */
++class DenyPowerBiEmbedPages implements ResponsePolicyInterface {
++
++  /**
++   * {@inheritdoc}
++   */
++  public function check(Response $response, Request $request) {
++    if ($response instanceof CacheableResponseInterface
++      && in_array('pwbi_embed', $response->getCacheableMetadata()->getCacheTags(), TRUE)) {
++      return static::DENY;
++    }
++    return NULL;
++  }
++
++}
 diff --git a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php b/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
 index 0876f69..02ad61b 100644
 --- a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
@@ -2408,3 +2561,54 @@ index 372d834..9c3a98a 100644
    }
  
  }
+diff --git a/tests/src/Unit/DenyPowerBiEmbedPagesTest.php b/tests/src/Unit/DenyPowerBiEmbedPagesTest.php
+new file mode 100644
+index 0000000..5dd8e23
+--- /dev/null
++++ b/tests/src/Unit/DenyPowerBiEmbedPagesTest.php
+@@ -0,0 +1,45 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Drupal\Tests\pwbi\Unit;
++
++use Drupal\Core\Cache\CacheableMetadata;
++use Drupal\Core\Cache\CacheableResponse;
++use Drupal\Core\PageCache\ResponsePolicyInterface;
++use Drupal\pwbi\PageCache\DenyPowerBiEmbedPages;
++use Drupal\Tests\UnitTestCase;
++use Symfony\Component\HttpFoundation\Request;
++use Symfony\Component\HttpFoundation\Response;
++
++/**
++ * Tests the page cache policy for pages with a Power BI embed.
++ *
++ * @coversDefaultClass \Drupal\pwbi\PageCache\DenyPowerBiEmbedPages
++ * @group pwbi
++ */
++class DenyPowerBiEmbedPagesTest extends UnitTestCase {
++
++  /**
++   * A page carrying the pwbi_embed cache tag is kept out of the page cache.
++   */
++  public function testDeniesPagesWithAnEmbed(): void {
++    $response = new CacheableResponse('page');
++    $response->addCacheableDependency((new CacheableMetadata())->setCacheTags(['node:1', 'pwbi_embed']));
++
++    $this->assertSame(ResponsePolicyInterface::DENY, (new DenyPowerBiEmbedPages())->check($response, new Request()));
++  }
++
++  /**
++   * Other pages are left to the other policies.
++   */
++  public function testIgnoresOtherPages(): void {
++    $policy = new DenyPowerBiEmbedPages();
++    $tagged = new CacheableResponse('page');
++    $tagged->addCacheableDependency((new CacheableMetadata())->setCacheTags(['node:1']));
++
++    $this->assertNull($policy->check($tagged, new Request()));
++    $this->assertNull($policy->check(new Response('plain'), new Request()));
++  }
++
++}
