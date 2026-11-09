@@ -1,8 +1,8 @@
 diff --git a/components/pwbi-embed/pwbi-embed.js b/components/pwbi-embed/pwbi-embed.js
-index fd784bc..c120fbd 100644
+index fd784bc..507bf6b 100644
 --- a/components/pwbi-embed/pwbi-embed.js
 +++ b/components/pwbi-embed/pwbi-embed.js
-@@ -1,28 +1,205 @@
+@@ -1,21 +1,172 @@
  ((Drupal) => {
 +  // Default lead time (ms) before token expiry to fire the first refresh.
 +  // Overridden per-embed by embedSettings.token_refresh_lead_ms which is set
@@ -51,54 +51,6 @@ index fd784bc..c120fbd 100644
 +  }
 +
 +  /**
-+   * Ask Drupal for a new embed token.
-+   *
-+   * @param {object} embedSettings - drupalSettings entry for this report.
-+   * @return {Promise<{token: string, expiration: string}>} The new token.
-+   * @throws {Error} When the request fails or holds no token.
-+   */
-+  async function fetchToken(embedSettings) {
-+    const { workspaceId, id: reportId, datasetId } = embedSettings;
-+    const base = drupalSettings.path.baseUrl;
-+    const refreshUrl = `${base}pwbi/token-refresh/${workspaceId}/${reportId}?dataset_id=${encodeURIComponent(datasetId)}`;
-+    const response = await fetch(refreshUrl, {
-+      headers: { 'Accept': 'application/json' },
-+    });
-+    if (!response.ok) {
-+      throw new Error(`Token refresh HTTP error ${response.status}`);
-+    }
-+    const data = await response.json();
-+    if (!data.token) {
-+      throw new Error('Token refresh response missing token');
-+    }
-+    return data;
-+  }
-+
-+  /**
-+   * Replace an expired page token before the report is embedded.
-+   *
-+   * A page can arrive with a token that has already expired, for example a
-+   * copy cached before the token's expiry, and the report cannot render with
-+   * it. Tries again every 5 s until Drupal answers with a new token.
-+   *
-+   * @param {object} embedSettings - drupalSettings entry for this report.
-+   */
-+  async function replaceExpiredPageToken(embedSettings) {
-+    for (;;) {
-+      try {
-+        const data = await fetchToken(embedSettings);
-+        embedSettings.accessToken = data.token;
-+        embedSettings.tokenExpirationDate = data.expiration;
-+        return;
-+      }
-+      catch (err) {
-+        console.error('[pwbi] Token refresh failed:', err.message ?? err);
-+        await new Promise((resolve) => setTimeout(resolve, 5000));
-+      }
-+    }
-+  }
-+
-+  /**
 +   * Fetch a fresh embed token from Drupal and apply it to the live report.
 +   *
 +   * Passes the report object directly (captured from powerbiClient.load()) so
@@ -116,8 +68,36 @@ index fd784bc..c120fbd 100644
 +    }
 +    embedSettings._refreshing = true;
 +
++    const { workspaceId, id: reportId, datasetId } = embedSettings;
++    const base = drupalSettings.path.baseUrl;
++    const refreshUrl = `${base}pwbi/token-refresh/${workspaceId}/${reportId}?dataset_id=${encodeURIComponent(datasetId)}`;
++
 +    try {
-+      const data = await fetchToken(embedSettings);
++      const response = await fetch(refreshUrl, {
++        headers: { 'Accept': 'application/json' },
++      });
++
++      if (!response.ok) {
++        console.error('[pwbi] Token refresh HTTP error', response.status);
++        // Retry in 5 s on HTTP errors.
++        embedSettings._refreshTimer = setTimeout(
++          () => updateToken(embedSettings, report),
++          5000,
++        );
++        return;
++      }
++
++      const data = await response.json();
++      if (!data.token) {
++        console.error('[pwbi] Token refresh response missing token');
++        // Retry in 5 s — a bare return here would permanently kill token
++        // refresh for this embed with no recovery path.
++        embedSettings._refreshTimer = setTimeout(
++          () => updateToken(embedSettings, report),
++          5000,
++        );
++        return;
++      }
 +
 +      const oldExpiration = embedSettings.tokenExpiration;
 +      const expirationChanged = oldExpiration !== data.expiration;
@@ -170,9 +150,8 @@ index fd784bc..c120fbd 100644
 +      }
 +    }
 +    catch (err) {
-+      console.error('[pwbi] Token refresh failed:', err.message ?? err);
-+      // Retry in 5 s on HTTP, missing-token, network and setAccessToken errors;
-+      // a bare return would end token refresh for this embed for good.
++      console.error('[pwbi] Token refresh failed', err);
++      // Retry in 5 s on network errors.
 +      embedSettings._refreshTimer = setTimeout(
 +        () => updateToken(embedSettings, report),
 +        5000,
@@ -187,7 +166,7 @@ index fd784bc..c120fbd 100644
 -    runEmbeds(pwbi_embeds, powerbi) {
 -      Object.entries(pwbi_embeds).forEach((entry) => {
 +    runEmbeds(pwbiEmbeds, powerbiClient) {
-+      Object.entries(pwbiEmbeds).forEach(async (entry) => {
++      Object.entries(pwbiEmbeds).forEach((entry) => {
          const [key, embedSettings] = entry;
          const embedContainer = document.getElementById(embedSettings.id);
          // powerbi is the global object of the powerbi-client library.
@@ -198,21 +177,18 @@ index fd784bc..c120fbd 100644
 -        }
 -        const arrayToken = embedSettings.accessToken.split(".");
 -        if (arrayToken.length < 2) {
+-          return;
+-        }
+-        const tokenPayload = JSON.parse(atob(arrayToken[1]));
+-        if (tokenPayload?.exp === undefined) {
 +        const alreadyEmbedded = Object.values(powerbiClient.embeds).some(
 +          (embed) => embed.element.id === embedSettings.id,
 +        );
 +        if (alreadyEmbedded) {
            return;
          }
--        const tokenPayload = JSON.parse(atob(arrayToken[1]));
--        if (tokenPayload?.exp === undefined) {
--          return;
-+
-+        if (embedSettings.token_refresh_enabled && !(Date.parse(embedSettings.tokenExpirationDate) > Date.now())) {
-+          await replaceExpiredPageToken(embedSettings);
-         }
  
-         const embedConfiguration = embedSettings;
+@@ -23,6 +174,7 @@
          if (embedConfiguration.settings === undefined) {
            embedConfiguration.settings = {};
          }
@@ -220,7 +196,7 @@ index fd784bc..c120fbd 100644
          // Get a reference to the HTML element that contains the embedded report.
          const powerBiEmbedParams = {
            embedConfiguration,
-@@ -33,37 +210,67 @@
+@@ -33,37 +185,67 @@
            detail: powerBiEmbedParams,
          });
          window.dispatchEvent(PowerBiPreEmbed);
@@ -298,7 +274,7 @@ index fd784bc..c120fbd 100644
          }
        });
        document.dispatchEvent(blockEmbedEvent);
-@@ -75,7 +282,7 @@
+@@ -75,7 +257,7 @@
        if (!settings.pwbi_flag) {
          const waitForGlobal = function (key, settings) {
            if (window[key]) {
@@ -307,7 +283,7 @@ index fd784bc..c120fbd 100644
            } else {
              setTimeout(function () {
                waitForGlobal(key, settings);
-@@ -83,9 +290,16 @@
+@@ -83,9 +265,16 @@
            }
          };
          settings.pwbi_flag = true;
@@ -458,7 +434,7 @@ index 2bd86b4..8dd89a7 100644
      class: Drupal\pwbi\EventSubscriber\PwbiResponseSubscriber
      arguments: ['@datetime.time', '@current_user']
 diff --git a/src/Api/PowerBiClient.php b/src/Api/PowerBiClient.php
-index 34987a1..7a9f1a5 100644
+index 34987a1..31d63d1 100644
 --- a/src/Api/PowerBiClient.php
 +++ b/src/Api/PowerBiClient.php
 @@ -5,6 +5,7 @@ declare(strict_types=1);
@@ -531,23 +507,7 @@ index 34987a1..7a9f1a5 100644
    /**
     * Run request to PowerBi endpoint.
     *
-@@ -81,9 +104,13 @@ class PowerBiClient implements ContainerInjectionInterface {
-       ]);
-       return $e->getMessage();
-     }
--    if (!$accessToken->getToken()) {
-+    // The grant type returns NULL when the token request fails (it logs the
-+    // reason). Answer like the exception above so callers render nothing
-+    // instead of a fatal error.
-+    if (!$accessToken || !$accessToken->getToken()) {
-       $message = 'The access token is empty.';
--      throw new \Exception($message);
-+      $this->loggerFactory->get('pwbi_api')->error($message);
-+      return $message;
-     }
-     $options['headers'] = [
-       'Authorization' => 'Bearer ' . $accessToken->getToken(),
-@@ -103,6 +130,23 @@ class PowerBiClient implements ContainerInjectionInterface {
+@@ -103,6 +126,23 @@ class PowerBiClient implements ContainerInjectionInterface {
        $this->loggerFactory->get('pwbi_api')->error('Failed to complete task "@error"', [
          '@error' => $e->getMessage(),
        ]);
@@ -571,7 +531,7 @@ index 34987a1..7a9f1a5 100644
        return $e->getMessage();
      }
      return $response->getBody()->getContents();
-@@ -120,7 +164,7 @@ class PowerBiClient implements ContainerInjectionInterface {
+@@ -120,7 +160,7 @@ class PowerBiClient implements ContainerInjectionInterface {
     * @throws \Exception
     */
    public function getEmbedToken(array $body): string {
@@ -580,7 +540,7 @@ index 34987a1..7a9f1a5 100644
    }
  
    /**
-@@ -137,7 +181,7 @@ class PowerBiClient implements ContainerInjectionInterface {
+@@ -137,7 +177,7 @@ class PowerBiClient implements ContainerInjectionInterface {
     * @throws \Exception
     */
    public function executeQuery(string $datasetId, array $body): string {
@@ -589,7 +549,7 @@ index 34987a1..7a9f1a5 100644
      return $this->connect('post', $endpoint, $body);
    }
  
-@@ -157,7 +201,7 @@ class PowerBiClient implements ContainerInjectionInterface {
+@@ -157,7 +197,7 @@ class PowerBiClient implements ContainerInjectionInterface {
     * @throws \Exception
     */
    public function executeGroupQuery(string $workspace, string $datasetId, array $body): string {
@@ -598,7 +558,7 @@ index 34987a1..7a9f1a5 100644
      return $this->connect('post', $endpoint, $body);
    }
  
-@@ -177,7 +221,7 @@ class PowerBiClient implements ContainerInjectionInterface {
+@@ -177,7 +217,7 @@ class PowerBiClient implements ContainerInjectionInterface {
     * @throws \Exception
     */
    public function exportGroupReportToFile(string $workspace, string $reportId, array $body): string {
@@ -607,7 +567,7 @@ index 34987a1..7a9f1a5 100644
      return $this->connect('post', $endpoint, $body);
    }
  
-@@ -198,7 +242,7 @@ class PowerBiClient implements ContainerInjectionInterface {
+@@ -198,7 +238,7 @@ class PowerBiClient implements ContainerInjectionInterface {
     *   Can throw a generic exception.
     */
    public function getGroupExportToFileStatus(string $workspace, string $reportId, string $exportId): string {
@@ -616,7 +576,7 @@ index 34987a1..7a9f1a5 100644
      return $this->connect('get', $endpoint);
    }
  
-@@ -223,7 +267,7 @@ class PowerBiClient implements ContainerInjectionInterface {
+@@ -223,7 +263,7 @@ class PowerBiClient implements ContainerInjectionInterface {
     *   Can throw a generic exception.
     */
    public function getGroupExportFile(string $workspace, string $reportId, string $exportId, string $filePath, string $filename): string {
@@ -625,7 +585,7 @@ index 34987a1..7a9f1a5 100644
      $filePath = $filePath . '/' . $filename;
      $fileRealPath = $this->fileSystem->realpath($filePath);
      $resource = fopen($fileRealPath, 'w+');
-@@ -251,7 +295,7 @@ class PowerBiClient implements ContainerInjectionInterface {
+@@ -251,7 +291,7 @@ class PowerBiClient implements ContainerInjectionInterface {
     *   Can throw a generic exception.
     */
    public function getGroupReport(string $workspace, string $reportId): string {
@@ -634,7 +594,7 @@ index 34987a1..7a9f1a5 100644
      return $this->connect('get', $endpoint);
    }
  
-@@ -270,7 +314,7 @@ class PowerBiClient implements ContainerInjectionInterface {
+@@ -270,7 +310,7 @@ class PowerBiClient implements ContainerInjectionInterface {
     *   Can throw a generic exception.
     */
    public function getPages(string $workspace, string $reportId): string {
@@ -1355,82 +1315,18 @@ index 0000000..b177bf8
 +
 +}
 diff --git a/src/EventSubscriber/PwbiResponseSubscriber.php b/src/EventSubscriber/PwbiResponseSubscriber.php
-index 610430c..8134c62 100644
+index 610430c..752614a 100644
 --- a/src/EventSubscriber/PwbiResponseSubscriber.php
 +++ b/src/EventSubscriber/PwbiResponseSubscriber.php
-@@ -22,6 +22,11 @@ use Symfony\Component\HttpKernel\KernelEvents;
-  */
- class PwbiResponseSubscriber implements EventSubscriberInterface {
- 
-+  /**
-+   * Response header each embed sets to its token's expiry (Unix time).
-+   */
-+  public const TOKEN_EXPIRES_HEADER = 'X-Pwbi-Token-Expires';
-+
-   public function __construct(
-     protected TimeInterface $time,
-     protected AccountInterface $user,
-@@ -32,35 +37,49 @@ class PwbiResponseSubscriber implements EventSubscriberInterface {
-    * {@inheritdoc}
-    */
-   public static function getSubscribedEvents() {
--    $events[KernelEvents::RESPONSE][] = ['onResponse'];
-+    // Run after core's FinishResponseSubscriber (priority 0), which sets
-+    // Expires to 1978 on responses it does not treat as cacheable (including
-+    // these pages, which DenyPowerBiEmbedPages refuses while they have no
-+    // Expires yet); the page cache would keep such a page, and its expired
-+    // token, until a cache clear.
-+    $events[KernelEvents::RESPONSE][] = ['onResponse', -10];
-     return $events;
-   }
- 
-   /**
--   * Sets expires and max-age for bubbled-up max-age values that are > 0.
-+   * Sets Expires and max-age to the expiry of the page's earliest token.
-    *
-    * @param \Symfony\Component\HttpKernel\Event\ResponseEvent $event
-    *   The response event.
-    */
-   public function onResponse(ResponseEvent $event) {
--    if (!$event->isMainRequest() || $this->user->isAuthenticated()) {
-+    $response = $event->getResponse();
-+    $expiries = array_map('intval', $response->headers->all(strtolower(self::TOKEN_EXPIRES_HEADER)));
-+    $response->headers->remove(self::TOKEN_EXPIRES_HEADER);
-+
-+    if (!$event->isMainRequest() || $this->user->isAuthenticated() || !$expiries) {
-       return;
-     }
--
--    $response = $event->getResponse();
-     if (!($response instanceof CacheableResponseInterface)) {
-       return;
-     }
--    $cache = $response->getCacheableMetadata();
--    if (!in_array('pwbi_embed', $cache->getCacheTags())) {
-+    if (!in_array('pwbi_embed', $response->getCacheableMetadata()->getCacheTags())) {
-       return;
+@@ -57,7 +57,7 @@ class PwbiResponseSubscriber implements EventSubscriberInterface {
      }
  
--    $max_age = (int) $cache->getCacheMaxAge();
+     $max_age = (int) $cache->getCacheMaxAge();
 -    if ($max_age !== Cache::PERMANENT) {
-+    // The earliest token on the page caps the lifetime, because a render
-+    // cache hit can carry a max-age older than the token's real remaining
-+    // time. The page's own max-age still applies, so a page with an element
-+    // that must not be cached (max-age 0) stays uncached.
-+    $now = $this->time->getRequestTime();
-+    $max_age = min($expiries) - $now;
-+    $page_max_age = $response->getCacheableMetadata()->getCacheMaxAge();
-+    if ($page_max_age !== Cache::PERMANENT) {
-+      $max_age = min($max_age, $page_max_age);
-+    }
 +    if ($max_age > 0) {
        $response->setMaxAge($max_age);
--      $date = new \DateTime('@' . ($this->time->getRequestTime() + $max_age));
--      $response->setExpires($date);
-+      $response->setExpires(new \DateTime('@' . ($now + $max_age)));
-     }
-   }
- 
+       $date = new \DateTime('@' . ($this->time->getRequestTime() + $max_age));
+       $response->setExpires($date);
 diff --git a/src/Form/PowerBiEmbedConfigForm.php b/src/Form/PowerBiEmbedConfigForm.php
 index 5c2b2e7..cf17ad1 100644
 --- a/src/Form/PowerBiEmbedConfigForm.php
@@ -1615,10 +1511,10 @@ index 5c2b2e7..cf17ad1 100644
  }
 diff --git a/src/PageCache/DenyPowerBiEmbedPages.php b/src/PageCache/DenyPowerBiEmbedPages.php
 new file mode 100644
-index 0000000..9dd5f8a
+index 0000000..9695bf9
 --- /dev/null
 +++ b/src/PageCache/DenyPowerBiEmbedPages.php
-@@ -0,0 +1,38 @@
+@@ -0,0 +1,34 @@
 +<?php
 +
 +declare(strict_types=1);
@@ -1631,13 +1527,13 @@ index 0000000..9dd5f8a
 +use Symfony\Component\HttpFoundation\Response;
 +
 +/**
-+ * Keeps a page with a Power BI embed out of the page cache past its token.
++ * Keeps pages with a Power BI embed out of the internal page cache.
 + *
-+ * The internal page cache keeps a page until its Expires date, or until a
-+ * cache tag is invalidated when Expires is missing or in the past, so it would
-+ * go on serving an expired embed token. PwbiResponseSubscriber sets Expires to
-+ * the token's expiry; this policy refuses to store the page when that did not
-+ * happen (for example when another element on the page has max-age 0).
++ * The internal page cache ignores max-age and keeps a page until one of its
++ * cache tags is invalidated, so a cached page would go on serving its embed
++ * token after the token expires. The embed's own render cache still expires
++ * with the token, so a page view does not ask Power BI for a new token each
++ * time.
 + */
 +class DenyPowerBiEmbedPages implements ResponsePolicyInterface {
 +
@@ -1645,12 +1541,8 @@ index 0000000..9dd5f8a
 +   * {@inheritdoc}
 +   */
 +  public function check(Response $response, Request $request) {
-+    if (!$response instanceof CacheableResponseInterface
-+      || !in_array('pwbi_embed', $response->getCacheableMetadata()->getCacheTags(), TRUE)) {
-+      return NULL;
-+    }
-+    $expires = $response->getExpires();
-+    if (!$expires || $expires->getTimestamp() <= (int) $request->server->get('REQUEST_TIME')) {
++    if ($response instanceof CacheableResponseInterface
++      && in_array('pwbi_embed', $response->getCacheableMetadata()->getCacheTags(), TRUE)) {
 +      return static::DENY;
 +    }
 +    return NULL;
@@ -1658,10 +1550,10 @@ index 0000000..9dd5f8a
 +
 +}
 diff --git a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php b/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
-index 0876f69..01462b7 100644
+index 0876f69..02ad61b 100644
 --- a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
 +++ b/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
-@@ -5,11 +5,15 @@ declare(strict_types=1);
+@@ -5,6 +5,9 @@ declare(strict_types=1);
  namespace Drupal\pwbi\Plugin\Field\FieldFormatter;
  
  use Drupal\breakpoint\BreakpointManager;
@@ -1671,13 +1563,7 @@ index 0876f69..01462b7 100644
  use Drupal\Core\Datetime\DrupalDateTime;
  use Drupal\Core\Field\FieldDefinitionInterface;
  use Drupal\Core\Field\FieldItemListInterface;
- use Drupal\Core\Field\FormatterBase;
- use Drupal\pwbi\Event\PwbiEmbedOverlaysEvent;
-+use Drupal\pwbi\EventSubscriber\PwbiResponseSubscriber;
- use Drupal\pwbi\Plugin\Field\FieldType\PowerBiEmbedField;
- use Drupal\pwbi\PowerBiEmbed;
- use Drupal\pwbi\Traits\PowerBiLangTrait;
-@@ -42,12 +46,14 @@ class PowerBiEmbedFormatter extends FormatterBase {
+@@ -42,12 +45,14 @@ class PowerBiEmbedFormatter extends FormatterBase {
      protected PowerBiEmbed $pwbiEmbed,
      protected BreakpointManager $breakpointManager,
      protected EventDispatcherInterface $dispatcher,
@@ -1693,7 +1579,7 @@ index 0876f69..01462b7 100644
     */
    public static function create(ContainerInterface $container, array $configuration, $plugin_id, $plugin_definition): static {
      // @phpstan-ignore-next-line
-@@ -62,6 +68,8 @@ class PowerBiEmbedFormatter extends FormatterBase {
+@@ -62,6 +67,8 @@ class PowerBiEmbedFormatter extends FormatterBase {
        $container->get('pwbi_embed.embed'),
        $container->get('breakpoint.manager'),
        $container->get('event_dispatcher'),
@@ -1702,7 +1588,7 @@ index 0876f69..01462b7 100644
      );
    }
  
-@@ -76,6 +84,12 @@ class PowerBiEmbedFormatter extends FormatterBase {
+@@ -76,6 +83,12 @@ class PowerBiEmbedFormatter extends FormatterBase {
      $this->dispatcher->dispatch($overlays_event, PwbiEmbedOverlaysEvent::PWBI_OVERLAYS);
      $overlay_top = $overlays_event->overlay_top ?? [];
      $overlay_blocking = $overlays_event->overlay_blocking ?? [];
@@ -1715,7 +1601,7 @@ index 0876f69..01462b7 100644
      foreach ($items as $item) {
        $report_id = $item->getValue()['report_id'];
        $workspace = $item->getValue()['workspace_id'];
-@@ -84,16 +98,23 @@ class PowerBiEmbedFormatter extends FormatterBase {
+@@ -84,16 +97,23 @@ class PowerBiEmbedFormatter extends FormatterBase {
        $report_height_units = $item->getValue()['report_height_units'];
        $report_width_units = $item->getValue()['report_width_units'];
        $report_configuration = $this->pwbiEmbed->getEmbedDataFromApi($workspace, $report_id);
@@ -1743,7 +1629,7 @@ index 0876f69..01462b7 100644
          ],
          '#type' => 'component',
          '#component' => 'pwbi:pwbi-embed',
-@@ -108,10 +129,16 @@ class PowerBiEmbedFormatter extends FormatterBase {
+@@ -108,7 +128,7 @@ class PowerBiEmbedFormatter extends FormatterBase {
          '#attached' => [
            'drupalSettings' => [
              'pwbi_embed' => [
@@ -1752,16 +1638,7 @@ index 0876f69..01462b7 100644
              ],
              'language' => $langcode,
            ],
-+          // The token's absolute expiry. A render cache hit replays the
-+          // max-age above as it was when this was built, so
-+          // PwbiResponseSubscriber caps the page's Expires with this instead.
-+          'http_header' => [
-+            [PwbiResponseSubscriber::TOKEN_EXPIRES_HEADER, (string) $token_expiration->getTimestamp(), FALSE],
-+          ],
-         ],
-       ];
-       if (!empty($overlay_top)) {
-@@ -175,20 +202,31 @@ class PowerBiEmbedFormatter extends FormatterBase {
+@@ -175,20 +195,31 @@ class PowerBiEmbedFormatter extends FormatterBase {
     * @return array <mixed>
     *   The options that will be used to embed a powerbi report.
     */
@@ -2586,10 +2463,10 @@ index 372d834..9c3a98a 100644
  }
 diff --git a/tests/src/Unit/DenyPowerBiEmbedPagesTest.php b/tests/src/Unit/DenyPowerBiEmbedPagesTest.php
 new file mode 100644
-index 0000000..8c61f56
+index 0000000..5dd8e23
 --- /dev/null
 +++ b/tests/src/Unit/DenyPowerBiEmbedPagesTest.php
-@@ -0,0 +1,71 @@
+@@ -0,0 +1,45 @@
 +<?php
 +
 +declare(strict_types=1);
@@ -2612,223 +2489,26 @@ index 0000000..8c61f56
 + */
 +class DenyPowerBiEmbedPagesTest extends UnitTestCase {
 +
-+  private const REQUEST_TIME = 1_800_000_000;
-+
 +  /**
-+   * A cacheable page response with the given tags and Expires header.
++   * A page carrying the pwbi_embed cache tag is kept out of the page cache.
 +   */
-+  private function page(array $tags, ?int $expires): CacheableResponse {
++  public function testDeniesPagesWithAnEmbed(): void {
 +    $response = new CacheableResponse('page');
-+    $response->addCacheableDependency((new CacheableMetadata())->setCacheTags($tags));
-+    if ($expires !== NULL) {
-+      $response->setExpires(new \DateTime('@' . $expires));
-+    }
-+    return $response;
-+  }
++    $response->addCacheableDependency((new CacheableMetadata())->setCacheTags(['node:1', 'pwbi_embed']));
 +
-+  /**
-+   * Checks a response against the policy at REQUEST_TIME.
-+   */
-+  private function check(Response $response): ?string {
-+    $request = new Request();
-+    $request->server->set('REQUEST_TIME', self::REQUEST_TIME);
-+    return (new DenyPowerBiEmbedPages())->check($response, $request);
-+  }
-+
-+  /**
-+   * An embed page that expires with its token may be cached.
-+   */
-+  public function testAllowsEmbedPageWithFutureExpires(): void {
-+    $this->assertNull($this->check($this->page(['pwbi_embed'], self::REQUEST_TIME + 1200)));
-+  }
-+
-+  /**
-+   * An embed page the page cache would keep until a cache clear is denied.
-+   */
-+  public function testDeniesEmbedPageWithoutUsableExpires(): void {
-+    // Core's "no cache" date, set when the site's page max age is 0.
-+    $this->assertSame(ResponsePolicyInterface::DENY, $this->check($this->page(['pwbi_embed'], 280299600)));
-+    $this->assertSame(ResponsePolicyInterface::DENY, $this->check($this->page(['pwbi_embed'], self::REQUEST_TIME)));
-+    $this->assertSame(ResponsePolicyInterface::DENY, $this->check($this->page(['pwbi_embed'], NULL)));
++    $this->assertSame(ResponsePolicyInterface::DENY, (new DenyPowerBiEmbedPages())->check($response, new Request()));
 +  }
 +
 +  /**
 +   * Other pages are left to the other policies.
 +   */
 +  public function testIgnoresOtherPages(): void {
-+    $this->assertNull($this->check($this->page(['node:1'], NULL)));
-+    $this->assertNull($this->check(new Response('plain')));
++    $policy = new DenyPowerBiEmbedPages();
++    $tagged = new CacheableResponse('page');
++    $tagged->addCacheableDependency((new CacheableMetadata())->setCacheTags(['node:1']));
++
++    $this->assertNull($policy->check($tagged, new Request()));
++    $this->assertNull($policy->check(new Response('plain'), new Request()));
 +  }
 +
-+}
-diff --git a/tests/src/Unit/PowerBiClientConnectTest.php b/tests/src/Unit/PowerBiClientConnectTest.php
-new file mode 100644
-index 0000000..4e8b1f4
---- /dev/null
-+++ b/tests/src/Unit/PowerBiClientConnectTest.php
-@@ -0,0 +1,50 @@
-+<?php
-+
-+declare(strict_types=1);
-+
-+namespace Drupal\Tests\pwbi\Unit;
-+
-+use Drupal\Core\File\FileSystemInterface;
-+use Drupal\Core\File\FileUrlGenerator;
-+use Drupal\Core\Logger\LoggerChannelFactoryInterface;
-+use Drupal\Core\Logger\LoggerChannelInterface;
-+use Drupal\Core\State\StateInterface;
-+use Drupal\oauth2_client\Service\Oauth2ClientService;
-+use Drupal\pwbi\Api\PowerBiClient;
-+use Drupal\Tests\UnitTestCase;
-+use GuzzleHttp\ClientInterface;
-+
-+/**
-+ * Tests connect() when the OAuth token request fails.
-+ *
-+ * @coversDefaultClass \Drupal\pwbi\Api\PowerBiClient
-+ * @group pwbi
-+ */
-+class PowerBiClientConnectTest extends UnitTestCase {
-+
-+  /**
-+   * A failed token request (NULL token) is answered, not a fatal error.
-+   */
-+  public function testConnectWithoutTokenReturnsMessage(): void {
-+    $auth = $this->createMock(Oauth2ClientService::class);
-+    $auth->method('getAccessToken')->willReturn(NULL);
-+    $logger = $this->createMock(LoggerChannelInterface::class);
-+    $logger->expects($this->once())->method('error');
-+    $loggerFactory = $this->createMock(LoggerChannelFactoryInterface::class);
-+    $loggerFactory->method('get')->willReturn($logger);
-+    $httpClient = $this->createMock(ClientInterface::class);
-+    $httpClient->expects($this->never())->method($this->anything());
-+
-+    $client = new PowerBiClient(
-+      $this->createMock(StateInterface::class),
-+      $loggerFactory,
-+      $httpClient,
-+      $auth,
-+      $this->createMock(FileUrlGenerator::class),
-+      $this->createMock(FileSystemInterface::class),
-+    );
-+
-+    $this->assertSame('The access token is empty.', $client->connect('get', 'https://api.powerbigov.us/v1.0/myorg/groups'));
-+  }
-+
-+}
-diff --git a/tests/src/Unit/PwbiResponseSubscriberTest.php b/tests/src/Unit/PwbiResponseSubscriberTest.php
-new file mode 100644
-index 0000000..dcc48ae
---- /dev/null
-+++ b/tests/src/Unit/PwbiResponseSubscriberTest.php
-@@ -0,0 +1,109 @@
-+<?php
-+
-+declare(strict_types=1);
-+
-+namespace Drupal\Tests\pwbi\Unit;
-+
-+use Drupal\Component\Datetime\TimeInterface;
-+use Drupal\Core\Cache\CacheableMetadata;
-+use Drupal\Core\Cache\CacheableResponse;
-+use Drupal\Core\EventSubscriber\FinishResponseSubscriber;
-+use Drupal\Core\Session\AccountInterface;
-+use Drupal\pwbi\EventSubscriber\PwbiResponseSubscriber;
-+use Drupal\Tests\UnitTestCase;
-+use Symfony\Component\HttpFoundation\Request;
-+use Symfony\Component\HttpKernel\Event\ResponseEvent;
-+use Symfony\Component\HttpKernel\HttpKernelInterface;
-+use Symfony\Component\HttpKernel\KernelEvents;
-+
-+/**
-+ * Tests that an embed page's Expires follows its token.
-+ *
-+ * @coversDefaultClass \Drupal\pwbi\EventSubscriber\PwbiResponseSubscriber
-+ * @group pwbi
-+ */
-+class PwbiResponseSubscriberTest extends UnitTestCase {
-+
-+  /**
-+   * The subscriber runs after core's FinishResponseSubscriber.
-+   *
-+   * Symfony calls higher priorities first, so the lower priority wins when
-+   * both set Expires.
-+   */
-+  public function testRunsAfterCoreFinishResponseSubscriber(): void {
-+    $priority = static function (array $listeners, string $method): int {
-+      foreach ($listeners as $listener) {
-+        if ($listener[0] === $method) {
-+          return $listener[1] ?? 0;
-+        }
-+      }
-+      throw new \LogicException("$method is not subscribed.");
-+    };
-+    $core = $priority(FinishResponseSubscriber::getSubscribedEvents()[KernelEvents::RESPONSE], 'onRespond');
-+    $pwbi = $priority(PwbiResponseSubscriber::getSubscribedEvents()[KernelEvents::RESPONSE], 'onResponse');
-+    $this->assertLessThan($core, $pwbi);
-+  }
-+
-+  /**
-+   * Expires follows the earliest token, not a replayed max-age.
-+   *
-+   * Core's past Expires is replaced; the bubbled max-age (3600, as replayed
-+   * from a render cache hit) is ignored in favor of the tokens' own expiry,
-+   * and the internal header is not sent.
-+   */
-+  public function testExpiresFollowsEarliestToken(): void {
-+    $now = 1_800_000_000;
-+    $time = $this->createMock(TimeInterface::class);
-+    $time->method('getRequestTime')->willReturn($now);
-+    $user = $this->createMock(AccountInterface::class);
-+    $user->method('isAuthenticated')->willReturn(FALSE);
-+
-+    $response = new CacheableResponse('page');
-+    $response->addCacheableDependency((new CacheableMetadata())->setCacheTags(['pwbi_embed'])->setCacheMaxAge(3600));
-+    $response->setExpires(new \DateTime('@280299600'));
-+    $response->headers->set(PwbiResponseSubscriber::TOKEN_EXPIRES_HEADER, (string) ($now + 1200), FALSE);
-+    $response->headers->set(PwbiResponseSubscriber::TOKEN_EXPIRES_HEADER, (string) ($now + 300), FALSE);
-+
-+    $event = new ResponseEvent($this->createMock(HttpKernelInterface::class), new Request(), HttpKernelInterface::MAIN_REQUEST, $response);
-+    (new PwbiResponseSubscriber($time, $user))->onResponse($event);
-+
-+    $this->assertSame($now + 300, $response->getExpires()->getTimestamp());
-+    $this->assertSame(300, $response->getMaxAge());
-+    $this->assertFalse($response->headers->has(PwbiResponseSubscriber::TOKEN_EXPIRES_HEADER));
-+  }
-+
-+
-+  /**
-+   * The page's own max-age still limits the lifetime.
-+   *
-+   * @dataProvider providerPageMaxAge
-+   */
-+  public function testPageMaxAgeStillApplies(int $page_max_age, int $expected_expires): void {
-+    $now = 1_800_000_000;
-+    $time = $this->createMock(TimeInterface::class);
-+    $time->method('getRequestTime')->willReturn($now);
-+    $user = $this->createMock(AccountInterface::class);
-+    $user->method('isAuthenticated')->willReturn(FALSE);
-+
-+    $response = new CacheableResponse('page');
-+    $response->addCacheableDependency((new CacheableMetadata())->setCacheTags(['pwbi_embed'])->setCacheMaxAge($page_max_age));
-+    $response->setExpires(new \DateTime('@280299600'));
-+    $response->headers->set(PwbiResponseSubscriber::TOKEN_EXPIRES_HEADER, (string) ($now + 1200), FALSE);
-+
-+    $event = new ResponseEvent($this->createMock(HttpKernelInterface::class), new Request(), HttpKernelInterface::MAIN_REQUEST, $response);
-+    (new PwbiResponseSubscriber($time, $user))->onResponse($event);
-+
-+    $this->assertSame($expected_expires, $response->getExpires()->getTimestamp());
-+  }
-+
-+  /**
-+   * Page max-age cases: uncacheable, shorter than the token, permanent.
-+   */
-+  public static function providerPageMaxAge(): array {
-+    return [
-+      'an uncacheable element keeps core\'s past Expires' => [0, 280299600],
-+      'a shorter page max-age wins' => [60, 1_800_000_060],
-+      'a permanent page uses the token' => [-1, 1_800_001_200],
-+    ];
-+  }
 +}
