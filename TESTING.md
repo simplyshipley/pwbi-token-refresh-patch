@@ -27,7 +27,7 @@ This patch adds the following features to the `pwbi` Drupal module:
 | `drush.services.yml` | **New** — registers Drush commands |
 | `pwbi.permissions.yml` | Adds `view pwbi embed token` permission for the refresh endpoint |
 | `pwbi.routing.yml` | Adds `/pwbi/token-refresh/{workspace_id}/{report_id}` route |
-| `src/EventSubscriber/PwbiResponseSubscriber.php` | Runs at priority -10, after core's `FinishResponseSubscriber`, and sets the page's `Expires` and `max-age` from the earliest token on the page (each embed reports its token's expiry in an internal `X-Pwbi-Token-Expires` header, which is removed before the response is sent). The page cache drops the page when that token expires |
+| `src/EventSubscriber/PwbiResponseSubscriber.php` | Runs at priority -10, after core's `FinishResponseSubscriber`, and sets the page's `Expires` and `max-age` to the smaller of the earliest token's remaining time and the page's own max-age, so a page with an uncacheable element stays uncached (each embed reports its token's expiry in an internal `X-Pwbi-Token-Expires` header, which is removed before the response is sent). The page cache drops the page when that token expires |
 | `src/PageCache/DenyPowerBiEmbedPages.php` + `pwbi.services.yml` | **New** -- page cache response policy: a page tagged `pwbi_embed` is not stored when its `Expires` is missing or in the past, because the page cache would then keep it, and its expired token, until a cache clear |
 | `tests/src/Unit/` | **New** -- unit tests for the policy, the subscriber's priority and `Expires`, and `connect()` without a token |
 

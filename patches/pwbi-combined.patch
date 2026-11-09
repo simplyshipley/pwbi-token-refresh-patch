@@ -1355,7 +1355,7 @@ index 0000000..b177bf8
 +
 +}
 diff --git a/src/EventSubscriber/PwbiResponseSubscriber.php b/src/EventSubscriber/PwbiResponseSubscriber.php
-index 610430c..10ce0c1 100644
+index 610430c..8134c62 100644
 --- a/src/EventSubscriber/PwbiResponseSubscriber.php
 +++ b/src/EventSubscriber/PwbiResponseSubscriber.php
 @@ -22,6 +22,11 @@ use Symfony\Component\HttpKernel\KernelEvents;
@@ -1370,7 +1370,7 @@ index 610430c..10ce0c1 100644
    public function __construct(
      protected TimeInterface $time,
      protected AccountInterface $user,
-@@ -32,35 +37,43 @@ class PwbiResponseSubscriber implements EventSubscriberInterface {
+@@ -32,35 +37,49 @@ class PwbiResponseSubscriber implements EventSubscriberInterface {
     * {@inheritdoc}
     */
    public static function getSubscribedEvents() {
@@ -1413,15 +1413,21 @@ index 610430c..10ce0c1 100644
  
 -    $max_age = (int) $cache->getCacheMaxAge();
 -    if ($max_age !== Cache::PERMANENT) {
-+    // The earliest token on the page decides; a render cache hit can carry
-+    // a max-age older than the token's real remaining time.
-+    $expires = min($expiries);
-+    $max_age = $expires - $this->time->getRequestTime();
++    // The earliest token on the page caps the lifetime, because a render
++    // cache hit can carry a max-age older than the token's real remaining
++    // time. The page's own max-age still applies, so a page with an element
++    // that must not be cached (max-age 0) stays uncached.
++    $now = $this->time->getRequestTime();
++    $max_age = min($expiries) - $now;
++    $page_max_age = $response->getCacheableMetadata()->getCacheMaxAge();
++    if ($page_max_age !== Cache::PERMANENT) {
++      $max_age = min($max_age, $page_max_age);
++    }
 +    if ($max_age > 0) {
        $response->setMaxAge($max_age);
 -      $date = new \DateTime('@' . ($this->time->getRequestTime() + $max_age));
 -      $response->setExpires($date);
-+      $response->setExpires(new \DateTime('@' . $expires));
++      $response->setExpires(new \DateTime('@' . ($now + $max_age)));
      }
    }
  
@@ -2713,10 +2719,10 @@ index 0000000..4e8b1f4
 +}
 diff --git a/tests/src/Unit/PwbiResponseSubscriberTest.php b/tests/src/Unit/PwbiResponseSubscriberTest.php
 new file mode 100644
-index 0000000..72b5e31
+index 0000000..dcc48ae
 --- /dev/null
 +++ b/tests/src/Unit/PwbiResponseSubscriberTest.php
-@@ -0,0 +1,75 @@
+@@ -0,0 +1,109 @@
 +<?php
 +
 +declare(strict_types=1);
@@ -2791,4 +2797,38 @@ index 0000000..72b5e31
 +    $this->assertFalse($response->headers->has(PwbiResponseSubscriber::TOKEN_EXPIRES_HEADER));
 +  }
 +
++
++  /**
++   * The page's own max-age still limits the lifetime.
++   *
++   * @dataProvider providerPageMaxAge
++   */
++  public function testPageMaxAgeStillApplies(int $page_max_age, int $expected_expires): void {
++    $now = 1_800_000_000;
++    $time = $this->createMock(TimeInterface::class);
++    $time->method('getRequestTime')->willReturn($now);
++    $user = $this->createMock(AccountInterface::class);
++    $user->method('isAuthenticated')->willReturn(FALSE);
++
++    $response = new CacheableResponse('page');
++    $response->addCacheableDependency((new CacheableMetadata())->setCacheTags(['pwbi_embed'])->setCacheMaxAge($page_max_age));
++    $response->setExpires(new \DateTime('@280299600'));
++    $response->headers->set(PwbiResponseSubscriber::TOKEN_EXPIRES_HEADER, (string) ($now + 1200), FALSE);
++
++    $event = new ResponseEvent($this->createMock(HttpKernelInterface::class), new Request(), HttpKernelInterface::MAIN_REQUEST, $response);
++    (new PwbiResponseSubscriber($time, $user))->onResponse($event);
++
++    $this->assertSame($expected_expires, $response->getExpires()->getTimestamp());
++  }
++
++  /**
++   * Page max-age cases: uncacheable, shorter than the token, permanent.
++   */
++  public static function providerPageMaxAge(): array {
++    return [
++      'an uncacheable element keeps core\'s past Expires' => [0, 280299600],
++      'a shorter page max-age wins' => [60, 1_800_000_060],
++      'a permanent page uses the token' => [-1, 1_800_001_200],
++    ];
++  }
 +}
