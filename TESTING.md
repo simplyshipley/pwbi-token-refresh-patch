@@ -14,7 +14,7 @@ This patch adds the following features to the `pwbi` Drupal module:
 
 | File | Change |
 |------|--------|
-| `src/Api/PowerBiClient.php` | Dynamic endpoint via Config API; `getApiRoot()` method replaces 8 hardcoded constants |
+| `src/Api/PowerBiClient.php` | Dynamic endpoint via Config API; `getApiRoot()` method replaces 8 hardcoded constants; `connect()` returns an error message instead of a fatal error when the OAuth token request fails |
 | `src/Form/PowerBiEmbedConfigForm.php` | Extends `ConfigFormBase`; adds 4 new admin fields (API endpoint, refresh on/off, refresh lead time in ms, debug logging) |
 | `src/Controller/PwbiTokenRefreshController.php` | **New** — JSON endpoint that issues a fresh embed token |
 | `src/Commands/PwbiCommands.php` | **New** — Drush commands: `pwbi:auth-check`, `pwbi:flush-token`, `pwbi:list-reports`, `pwbi:token-refresh` |
@@ -27,8 +27,9 @@ This patch adds the following features to the `pwbi` Drupal module:
 | `drush.services.yml` | **New** — registers Drush commands |
 | `pwbi.permissions.yml` | Adds `view pwbi embed token` permission for the refresh endpoint |
 | `pwbi.routing.yml` | Adds `/pwbi/token-refresh/{workspace_id}/{report_id}` route |
-| `src/PageCache/DenyPowerBiEmbedPages.php` + `pwbi.services.yml` | **New** -- page cache response policy: pages tagged `pwbi_embed` are never stored in Drupal's internal page cache, which ignores max-age and would serve an expired token. The embed's render cache still expires with the token |
-| `tests/src/Unit/DenyPowerBiEmbedPagesTest.php` | **New** -- unit test for the policy |
+| `src/EventSubscriber/PwbiResponseSubscriber.php` | Runs at priority -10, after core's `FinishResponseSubscriber`, so the page's `Expires` stays at the embed token's expiry and the page cache drops the page when the token expires |
+| `src/PageCache/DenyPowerBiEmbedPages.php` + `pwbi.services.yml` | **New** -- page cache response policy: a page tagged `pwbi_embed` is not stored when its `Expires` is missing or in the past, because the page cache would then keep it, and its expired token, until a cache clear |
+| `tests/src/Unit/` | **New** -- unit tests for the policy, the subscriber's priority and `Expires`, and `connect()` without a token |
 
 ---
 
@@ -150,14 +151,17 @@ Errors (`[pwbi] Token refresh failed: Token refresh HTTP error <status>`, `... r
 
 ### Page cache
 
-Pages that show a report are never stored in Drupal's internal page cache (the policy in `src/PageCache/DenyPowerBiEmbedPages.php`). Check it as an anonymous visitor:
+Pages that show a report stay in Drupal's internal page cache until their embed token expires, then are rebuilt with a new token. Check it as an anonymous visitor, twice:
 
 ```bash
-curl -sI https://your-site.example.com/<dashboard-page> | grep -i x-drupal-cache
-# X-Drupal-Cache: UNCACHEABLE (response policy)
+curl -sI https://your-site.example.com/<dashboard-page> | grep -i -E "x-drupal-cache|expires"
+# X-Drupal-Cache: HIT
+# Expires: <the token's expiry, matching tokenExpirationDate in drupalSettings>
 ```
 
-`HIT` on a dashboard page means the policy is not active: rebuild caches (`drush cr`) and check that the patch applied.
+- `Expires: Sun, 19 Nov 1978 ...` with `HIT` means the patch is not active: rebuild caches (`drush cr`) and check that it applied.
+- `X-Drupal-Cache: UNCACHEABLE (response policy)` means the page's lifetime could not be set (for example another block on the page is not cacheable), so the page is rebuilt on each visit instead of being cached with an expired token.
+- A copy a browser kept past the expiry still works: the page fetches a new token before embedding.
 
 ---
 
