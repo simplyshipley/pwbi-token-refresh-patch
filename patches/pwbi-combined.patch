@@ -987,7 +987,7 @@ index 020547c..6f9a893 100644
 +    workspace_id: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
 +    report_id: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
 diff --git a/pwbi.services.yml b/pwbi.services.yml
-index 2bd86b4..0c55569 100644
+index 2bd86b4..e79534c 100644
 --- a/pwbi.services.yml
 +++ b/pwbi.services.yml
 @@ -7,11 +7,11 @@ services:
@@ -1004,7 +1004,17 @@ index 2bd86b4..0c55569 100644
  
    pwbi.cert_manager:
      class: '\Drupal\pwbi\Cert\CertificateManager'
-@@ -25,4 +25,4 @@ services:
+@@ -21,8 +21,14 @@ services:
+     class: '\Drupal\pwbi\Oauth2Form\FormChanges'
+     arguments: ['@pwbi.cert_manager']
+ 
++  pwbi.page_cache_response_policy.deny_embeds:
++    class: Drupal\pwbi\PageCache\DenyPowerBiEmbedPages
++    public: false
++    tags:
++      - { name: page_cache_response_policy }
++
+   pwbi.pwbi_cache_response_subscriber:
      class: Drupal\pwbi\EventSubscriber\PwbiResponseSubscriber
      arguments: ['@datetime.time', '@current_user']
      tags:
@@ -2058,6 +2068,46 @@ index 5c2b2e7..5a109cc 100644
    }
  
  }
+diff --git a/src/PageCache/DenyPowerBiEmbedPages.php b/src/PageCache/DenyPowerBiEmbedPages.php
+new file mode 100644
+index 0000000..9695bf9
+--- /dev/null
++++ b/src/PageCache/DenyPowerBiEmbedPages.php
+@@ -0,0 +1,34 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Drupal\pwbi\PageCache;
++
++use Drupal\Core\Cache\CacheableResponseInterface;
++use Drupal\Core\PageCache\ResponsePolicyInterface;
++use Symfony\Component\HttpFoundation\Request;
++use Symfony\Component\HttpFoundation\Response;
++
++/**
++ * Keeps pages with a Power BI embed out of the internal page cache.
++ *
++ * The internal page cache ignores max-age and keeps a page until one of its
++ * cache tags is invalidated, so a cached page would go on serving its embed
++ * token after the token expires. The embed's own render cache still expires
++ * with the token, so a page view does not ask Power BI for a new token each
++ * time.
++ */
++class DenyPowerBiEmbedPages implements ResponsePolicyInterface {
++
++  /**
++   * {@inheritdoc}
++   */
++  public function check(Response $response, Request $request) {
++    if ($response instanceof CacheableResponseInterface
++      && in_array('pwbi_embed', $response->getCacheableMetadata()->getCacheTags(), TRUE)) {
++      return static::DENY;
++    }
++    return NULL;
++  }
++
++}
 diff --git a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php b/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
 index 0876f69..02ad61b 100644
 --- a/src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php
@@ -3157,6 +3207,57 @@ index 0000000..ff28463
 +    $target = sys_get_temp_dir() . '/pwbi_settings_cert.pem';
 +    file_put_contents($target, file_get_contents($source));
 +    return $target;
++  }
++
++}
+diff --git a/tests/src/Unit/DenyPowerBiEmbedPagesTest.php b/tests/src/Unit/DenyPowerBiEmbedPagesTest.php
+new file mode 100644
+index 0000000..5dd8e23
+--- /dev/null
++++ b/tests/src/Unit/DenyPowerBiEmbedPagesTest.php
+@@ -0,0 +1,45 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Drupal\Tests\pwbi\Unit;
++
++use Drupal\Core\Cache\CacheableMetadata;
++use Drupal\Core\Cache\CacheableResponse;
++use Drupal\Core\PageCache\ResponsePolicyInterface;
++use Drupal\pwbi\PageCache\DenyPowerBiEmbedPages;
++use Drupal\Tests\UnitTestCase;
++use Symfony\Component\HttpFoundation\Request;
++use Symfony\Component\HttpFoundation\Response;
++
++/**
++ * Tests the page cache policy for pages with a Power BI embed.
++ *
++ * @coversDefaultClass \Drupal\pwbi\PageCache\DenyPowerBiEmbedPages
++ * @group pwbi
++ */
++class DenyPowerBiEmbedPagesTest extends UnitTestCase {
++
++  /**
++   * A page carrying the pwbi_embed cache tag is kept out of the page cache.
++   */
++  public function testDeniesPagesWithAnEmbed(): void {
++    $response = new CacheableResponse('page');
++    $response->addCacheableDependency((new CacheableMetadata())->setCacheTags(['node:1', 'pwbi_embed']));
++
++    $this->assertSame(ResponsePolicyInterface::DENY, (new DenyPowerBiEmbedPages())->check($response, new Request()));
++  }
++
++  /**
++   * Other pages are left to the other policies.
++   */
++  public function testIgnoresOtherPages(): void {
++    $policy = new DenyPowerBiEmbedPages();
++    $tagged = new CacheableResponse('page');
++    $tagged->addCacheableDependency((new CacheableMetadata())->setCacheTags(['node:1']));
++
++    $this->assertNull($policy->check($tagged, new Request()));
++    $this->assertNull($policy->check(new Response('plain'), new Request()));
 +  }
 +
 +}

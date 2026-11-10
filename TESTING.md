@@ -27,6 +27,8 @@ This patch adds the following features to the `pwbi` Drupal module:
 | `drush.services.yml` | **New** — registers Drush commands |
 | `pwbi.permissions.yml` | Adds `view pwbi embed token` permission for the refresh endpoint |
 | `pwbi.routing.yml` | Adds `/pwbi/token-refresh/{workspace_id}/{report_id}` route |
+| `src/PageCache/DenyPowerBiEmbedPages.php` + `pwbi.services.yml` | **New** -- page cache response policy: pages tagged `pwbi_embed` are never stored in Drupal's internal page cache, which ignores max-age and would serve an expired token. The embed's render cache still expires with the token |
+| `tests/src/Unit/DenyPowerBiEmbedPagesTest.php` | **New** -- unit test for the policy |
 
 ---
 
@@ -132,6 +134,17 @@ The OAuth2 endpoint URLs (authorization, token, resource_owner, scope) also upda
 | Minutes before expiry to refresh | How early to request a new token | 10 |
 
 Enable the feature and save. After a `drush cr`, the JS will start the 30-second polling interval on each embedded report's first render.
+
+### Page cache
+
+Pages that show a report are never stored in Drupal's internal page cache (the policy in `src/PageCache/DenyPowerBiEmbedPages.php`). Check it as an anonymous visitor:
+
+```bash
+curl -sI https://your-site.example.com/<dashboard-page> | grep -i x-drupal-cache
+# X-Drupal-Cache: UNCACHEABLE (response policy)
+```
+
+`HIT` on a dashboard page means the policy is not active: rebuild caches (`drush cr`) and check that the patch applied.
 
 ---
 
