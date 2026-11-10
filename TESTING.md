@@ -27,7 +27,7 @@ This patch adds the following features to the `pwbi` Drupal module:
 | `drush.services.yml` | **New** — registers Drush commands |
 | `pwbi.permissions.yml` | Adds `view pwbi embed token` permission for the refresh endpoint |
 | `pwbi.routing.yml` | Adds `/pwbi/token-refresh/{workspace_id}/{report_id}` route |
-| `src/PageCache/DenyPowerBiEmbedPages.php` + `pwbi.services.yml` | **New** -- page cache response policy: pages tagged `pwbi_embed` are never stored in Drupal's internal page cache, which ignores max-age and would serve an expired token. The embed's render cache still expires with the token |
+| `src/PageCache/DenyPowerBiEmbedPages.php` + `pwbi.services.yml` | **New** -- page cache response policy, registered for the internal page cache and the dynamic page cache (the same two caches as core's kill switch): pages tagged `pwbi_embed` are never stored in either. The internal page cache ignores max-age and would serve an expired token. The embed's render cache still expires with the token |
 | `tests/src/Unit/DenyPowerBiEmbedPagesTest.php` | **New** -- unit test for the policy |
 
 ---
@@ -137,10 +137,11 @@ Enable the feature and save. After a `drush cr`, the JS will start the 30-second
 
 ### Page cache
 
-Pages that show a report are never stored in Drupal's internal page cache (the policy in `src/PageCache/DenyPowerBiEmbedPages.php`). Check it as an anonymous visitor:
+Pages that show a report are never stored in Drupal's internal page cache or dynamic page cache (the policy in `src/PageCache/DenyPowerBiEmbedPages.php`). Check it as an anonymous visitor:
 
 ```bash
-curl -sI https://your-site.example.com/<dashboard-page> | grep -i x-drupal-cache
+curl -sI https://your-site.example.com/<dashboard-page> | grep -i -E 'x-drupal-(dynamic-)?cache'
+# X-Drupal-Dynamic-Cache: UNCACHEABLE (response policy)
 # X-Drupal-Cache: UNCACHEABLE (response policy)
 ```
 
