@@ -15,13 +15,13 @@ This patch adds the following features to the `pwbi` Drupal module:
 | File | Change |
 |------|--------|
 | `src/Api/PowerBiClient.php` | Dynamic endpoint via Config API; `getApiRoot()` method replaces 8 hardcoded constants |
-| `src/Form/PowerBiEmbedConfigForm.php` | Extends `ConfigFormBase`; adds 4 new admin fields (API endpoint, refresh on/off, refresh lead time in ms, debug logging) |
+| `src/Form/PowerBiEmbedConfigForm.php` | Extends `ConfigFormBase`; adds 3 new admin fields |
 | `src/Controller/PwbiTokenRefreshController.php` | **New** — JSON endpoint that issues a fresh embed token |
 | `src/Commands/PwbiCommands.php` | **New** — Drush commands: `pwbi:auth-check`, `pwbi:flush-token`, `pwbi:list-reports`, `pwbi:token-refresh` |
 | `src/PowerBiEmbed.php` | Returns `datasetId` in embed data so JS can pass it to the refresh endpoint |
-| `src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php` | Passes `workspaceId`, `datasetId`, and refresh settings into `drupalSettings`; sets render cache max-age to the time left on the embed token so a cached page never serves an expired token |
+| `src/Plugin/Field/FieldFormatter/PowerBiEmbedFormatter.php` | Passes `workspaceId`, `datasetId`, and refresh settings into `drupalSettings`; reduces render cache max-age by the refresh buffer so cached pages always deliver a fresh-enough token |
 | `src/Plugin/Oauth2Client/PwbiServicePrincipal.php` | Multi-cloud OAuth2 — all four endpoint URLs (authorization, token, resource_owner, scope) auto-swap based on `pwbi_api_endpoint` config |
-| `components/pwbi-embed/pwbi-embed.js` | Adds a `setTimeout` that fires `token_refresh_lead_ms` before expiry (`scheduleNextRefresh` / `updateToken`), retries every 1 s until the expiry advances, and re-checks on `visibilitychange` |
+| `components/pwbi-embed/pwbi-embed.js` | Adds `setInterval` polling (30s) with `checkTokenAndUpdate` / `updateToken` |
 | `config/install/pwbi.settings.yml` | **New** — default config values |
 | `config/schema/pwbi.schema.yml` | Adds `pwbi.settings` schema |
 | `drush.services.yml` | **New** — registers Drush commands |
@@ -48,7 +48,7 @@ Go to **Admin → Configuration → Power BI → Embed Settings** (`/admin/confi
 
 - [ ] Set **API endpoint** to **US Government GCC** (`https://api.powerbigov.us`) for OIG/GCC sites
 - [ ] Check **Enable automatic embed token refresh**
-- [ ] Leave **Milliseconds before expiry to start refresh** at the default 1500 (1000 to 2000 recommended)
+- [ ] Set **Minutes before expiry to refresh** (default 10 is fine)
 - [ ] Click **Save configuration**
 - [ ] `drush cr` — clears cached config so the formatter picks up the new settings
 
@@ -57,10 +57,10 @@ Go to **Admin → Configuration → Power BI → Embed Settings** (`/admin/confi
 Go to **Admin → People → Permissions** (`/admin/people/permissions`):
 
 - [ ] Find **"Request Power BI embed tokens"** under the Power BI section
-- [ ] Grant it to every role that should see embedded reports. On a public site that includes `anonymous user` as well as `authenticated user`. Export the role config afterwards (`drush cex`) so a later config import does not remove it.
+- [ ] Grant it to every role that should see embedded reports (e.g. `authenticated user`, or your site-specific viewer role)
 - [ ] Save permissions
 
-> Without this permission the JS token refresh will receive a 403 on every refresh and the embed will stop working when its token expires.
+> Without this permission the JS token refresh will receive a 403 on every poll and the embed will stop refreshing silently.
 
 ### 4. Test the OAuth handshake (Layer 1)
 
@@ -131,22 +131,9 @@ The OAuth2 endpoint URLs (authorization, token, resource_owner, scope) also upda
 | Setting | Description | Default |
 |---------|-------------|---------|
 | Enable automatic embed token refresh | Turns refresh on site-wide | Off |
-| Milliseconds before expiry to start refresh | How long before the token's expiry timestamp the browser asks for a new one. Fire too early and Power BI returns the same expiry (the JS then retries every 1 s, up to 15 times, then every 30 s) | 1500 |
+| Minutes before expiry to refresh | How early to request a new token | 10 |
 
-Enable the feature and save. After a `drush cr`, the JS schedules one refresh per embedded report on its first render, `token_refresh_lead_ms` before the token expires.
-
-### Debug logging
-
-| Setting | Description | Default |
-|---------|-------------|---------|
-| Enable debug logging | Extra browser console lines and a watchdog entry per refresh | Off |
-
-With it on:
-- the browser console logs `[pwbi] Next token refresh scheduled for <time> (in <n>s)` each time a refresh is scheduled;
-- after each refresh it logs the last 8 characters of the old and new token and the old and new expiry, each marked `CHANGED` or `SAME`, and warns when the expiry did not advance or retries stalled;
-- the controller writes `Embed token refreshed for report ... expires ...` to the watchdog (`drush watchdog:show --type=pwbi`).
-
-Errors (`Token refresh HTTP error <status>`, `missing token`, `Token refresh failed`) are logged to the console whether debug is on or off. Debug changes no behavior, only logging. On production, where config is read-only, turn it on with a `settings.php` override (`$config['pwbi.settings']['debug_enabled'] = TRUE;`) followed by `drush cr`, and remove it after testing.
+Enable the feature and save. After a `drush cr`, the JS will start the 30-second polling interval on each embedded report's first render.
 
 ### Page cache
 
@@ -261,14 +248,15 @@ Power BI Embed Token Refresh
 This tests the actual route that the browser JS calls. Use `curl` from outside the server.
 
 ```bash
-# Call the refresh endpoint as an anonymous visitor (no cookie, no CSRF token).
-# The route has no CSRF requirement; access is the `view pwbi embed token`
-# permission plus the workspace allowlist.
-curl -si -H "Accept: application/json" \
+# 1. Get a session CSRF token (saves session cookie to /tmp/pwbi-test-cookie)
+CSRF=$(curl -sc /tmp/pwbi-test-cookie "https://your-site.example.com/session/token")
+
+# 2. Call the refresh endpoint
+curl -sb /tmp/pwbi-test-cookie \
+  -H "X-CSRF-Token: $CSRF" \
+  -H "Accept: application/json" \
   "https://your-site.example.com/pwbi/token-refresh/<workspace_id>/<report_id>?dataset_id=<dataset_id>"
 ```
-
-Get the three IDs from the page itself: in the browser console on the report page, run `drupalSettings.pwbi_embed` and read `workspaceId`, `id` and `datasetId`.
 
 **Success response:**
 ```json
@@ -284,7 +272,7 @@ Get the three IDs from the page itself: in the browser console on the report pag
 | `400 {"error":"Invalid dataset_id format"}` | `dataset_id` is not a valid UUID |
 | `502 {"error":"Token generation failed"}` | Layer 2 failed — fix embed token generation first |
 | `404` or HTML page | Route not found — run `drush cr` and verify `pwbi.routing.yml` was updated |
-| `403` whose body is not `{"error":"Forbidden"}` (Drupal's own access denied) | The role making the request lacks the `view pwbi embed token` permission (for the curl above, the `anonymous user` role) |
+| `403` with CSRF message | Missing or wrong `X-CSRF-Token` header |
 
 ---
 
@@ -308,27 +296,25 @@ Object.entries(drupalSettings.pwbi_embed).forEach(([key, s]) => {
 });
 ```
 
-`_refreshScheduled: true` means a refresh timer is set. `minutesRemaining` should count down; after a refresh with a new expiry it jumps forward.
+`_refreshScheduled: true` means the interval is running. `minutesRemaining` should count down; after a refresh fires it resets to ~60.
 
-**Real test (the one that proves it):** turn on debug logging, load the report, leave the tab open past the expiry shown in `tokenExpiration`, and watch for:
-```
-[pwbi] Next token refresh scheduled for 2026-03-03T16:00:00.000Z (in 3540s)
-[pwbi] Token refreshed.
-  token:      ...a1b2c3d4 → ...e5f6g7h8 (CHANGED)
-  expiration: 2026-03-03T16:00:01Z → 2026-03-03T17:00:01Z (CHANGED)
-[pwbi] Next token refresh scheduled for 2026-03-03T16:59:59.500Z (in 3598s)
-```
-(Example values.) An expiry marked `CHANGED` that moves forward about an hour confirms that `setAccessToken()` ran with a new token. Keep the Network tab open too: the `/pwbi/token-refresh/` request should return 200, and Power BI's own requests from the iframe (for example `.../powerbi/refresh/subscribe`) should not start failing with 401/403 after the old expiry.
-
-**Quick test (forces a refresh now):** the timer is only rescheduled from `tokenExpiration` when the tab becomes visible again, so move the expiry and switch tabs:
+**Force an immediate refresh (for testing):**
 
 ```javascript
+// Set tokenExpiration to 5 minutes from now — next 30s interval tick will trigger refresh
 const s = Object.values(drupalSettings.pwbi_embed)[0];
-s.tokenExpiration = new Date(Date.now() + 10 * 1000).toISOString();
-console.log('[pwbi-test] tokenExpiration set to', s.tokenExpiration, '- switch to another tab and back');
+s.tokenExpiration = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+console.log('[pwbi-test] tokenExpiration set to', s.tokenExpiration, '— refresh will fire within 30s');
 ```
 
-After you come back, the refresh fires within about 5 seconds. This proves the endpoint and `setAccessToken()` path work. Because the real token is not near expiry yet, Power BI may return the **same** expiry: with debug logging on, the log then shows `expiration: ... (SAME)` and `Expiration unchanged — OAuth window not yet renewed. Retrying in 1 s.`, retries every second up to 15 times, then every 30 seconds until the expiry advances. That is expected for a forced test. Reload the page to reset.
+Watch the console for the 30-second polling log and the refresh sequence:
+```
+[pwbi] Token check — expires: 2026-03-02T20:30:00Z, ~4min left, refresh window: 10min
+[pwbi] Token expiring soon, refreshing...
+[pwbi] Token refreshed. New expiration: 2026-03-02T21:28:00Z
+```
+
+The "Token check" line appears every 30 seconds. Once the token enters the refresh window (`minutesRemaining ≤ token_refresh_minutes`), the "expiring soon" and "refreshed" lines follow. The **"New expiration:" timestamp should advance by ~60 minutes** from the previous expiry — this is confirmation that `setAccessToken()` succeeded and Power BI silently accepted the new token.
 
 **Verify the new token was applied to the live embed:**
 
@@ -347,7 +333,7 @@ After a successful refresh, this value should differ from what it was on initial
 
 **Server-side confirmation via Drupal watchdog:**
 
-While **Enable debug logging** is on, every successful token refresh also logs to the Drupal watchdog. Run this to see server-side confirmation:
+Every successful token refresh also logs to the Drupal watchdog. Run this to see server-side confirmation:
 
 ```bash
 drush watchdog:show --type=pwbi
@@ -487,14 +473,16 @@ drush pwbi:list-reports
 drush pwbi:token-refresh                                      # auto-detect if only one report
 drush pwbi:token-refresh <workspace_id> <report_id>          # explicit when multiple reports
 
-# Server-side token refresh confirmations (watchdog entries from the controller;
-# written only while debug logging is on)
+# Server-side token refresh confirmations (watchdog entries from the controller)
 drush watchdog:show --type=pwbi
 
-# All four patch settings at once: endpoint, refresh on/off, lead time, debug
-# (shows the effective values, including any settings.php override)
-drush cget pwbi.settings --include-overridden
+# Check current API endpoint setting
+drush php-eval "print \Drupal::config('pwbi.settings')->get('pwbi_api_endpoint');"
 
-# Is the refresh permission still granted to anonymous visitors?
-drush role:list --filter="view pwbi embed token"
+# Check whether token refresh is enabled and the refresh window
+drush php-eval "
+  \$s = \Drupal::config('pwbi.settings');
+  print 'refresh_enabled: ' . (\$s->get('token_refresh_enabled') ? 'yes' : 'no') . PHP_EOL;
+  print 'refresh_minutes: ' . \$s->get('token_refresh_minutes') . PHP_EOL;
+"
 ```
