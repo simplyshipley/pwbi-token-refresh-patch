@@ -18,7 +18,7 @@ A government website (USPS OIG) runs a Drupal site using the `pwbi` module (v2.x
 - **Code review applied** (Drupal architect + PHP quality review, session 2):
   - `PwbiServicePrincipal.php`: Multi-cloud OAuth2 endpoint map — authorization, token, resource_owner, and scope URLs all auto-swap from `pwbi_api_endpoint` config. Memoized per-request via `$resolvedCloudOauthConfig`.
   - `PowerBiEmbed.php`: `PWBI_REPORT_META` moved from State blob (read-modify-write) to per-key `KeyValueStore` entries. NULL guards added to all three `Json::decode()` calls.
-  - `PowerBiEmbedFormatter.php`: `config:pwbi.settings` cache tag added; config read moved outside foreach loop; render cache max-age reduced by refresh buffer when refresh enabled; `ImmutableConfig` passed to `buildEmbedConfiguration()`.
+  - `PowerBiEmbedFormatter.php`: `config:pwbi.settings` cache tag added; config read moved outside foreach loop; render cache max-age reduced by refresh buffer when refresh enabled (superseded 2026-11-12 on branch `fix/token-renew-early`: the embed element is no longer render-cached, see TESTING.md); `ImmutableConfig` passed to `buildEmbedConfiguration()`.
   - `PowerBiEmbedConfigForm.php`: `StateInterface` injected (replaces `\Drupal::state()` static call); endpoint-change detection auto-clears cached OAuth2 token on save.
   - `PwbiTokenRefreshController.php`: UUID validation for `workspace_id`, `report_id`, and `dataset_id`; `Request` object injected (replaces `\Drupal::request()` static call); Drupal watchdog logging on successful token issue.
   - `pwbi-embed.js`: `_refreshing` guard (try/finally) prevents concurrent token refresh calls; diagnostic `console.log` in `checkTokenAndUpdate()` shows token expiry and minutes remaining every 30 seconds.
