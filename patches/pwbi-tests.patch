@@ -122,9 +122,22 @@ index 0000000..ce03e2e
 +  }
 +
 +}
+diff --git a/tests/src/Functional/EmbedTest.php b/tests/src/Functional/EmbedTest.php
+index 27e9d60..fc01b0f 100644
+--- a/tests/src/Functional/EmbedTest.php
++++ b/tests/src/Functional/EmbedTest.php
+@@ -99,7 +99,7 @@ class EmbedTest extends BrowserTestBase {
+     $this->assertNull($pwbi_overlay_blocking);
+     $headers = $this->getSession()->getResponseHeaders();
+     $this->assertContains("pwbi_embed", explode(" ", $headers['X-Drupal-Cache-Tags'][0]));
+-    $this->assertEquals($max_age, $headers['X-Drupal-Cache-Max-Age'][0]);
++    $this->assertEquals('0 (Uncacheable)', $headers['X-Drupal-Cache-Max-Age'][0]);
+   }
+ 
+ }
 diff --git a/tests/src/Functional/PowerBiEmbedConfigFormTest.php b/tests/src/Functional/PowerBiEmbedConfigFormTest.php
 new file mode 100644
-index 0000000..8575722
+index 0000000..af91f34
 --- /dev/null
 +++ b/tests/src/Functional/PowerBiEmbedConfigFormTest.php
 @@ -0,0 +1,153 @@
@@ -226,7 +239,7 @@ index 0000000..8575722
 +    // No validation error — form should save successfully.
 +    $this->assertSession()->statusCodeEquals(200);
 +    $this->assertSession()->pageTextContains('The configuration options have been saved.');
-+    $this->assertSession()->pageTextNotContains('Lead time must be between 250 and 10000 milliseconds');
++    $this->assertSession()->pageTextNotContains('Lead time must be between 250 and 600000 milliseconds');
 +  }
 +
 +  /**
@@ -244,7 +257,7 @@ index 0000000..8575722
 +    ], 'Save configuration');
 +
 +    $this->assertSession()->statusCodeEquals(200);
-+    $this->assertSession()->pageTextContains('Lead time must be between 250 and 10000 milliseconds');
++    $this->assertSession()->pageTextContains('Lead time must be between 250 and 600000 milliseconds');
 +    // Config must not have been updated.
 +    $this->assertFalse((bool) $this->config('pwbi.settings')->get('token_refresh_enabled'));
 +  }
@@ -461,7 +474,7 @@ index 0000000..ec23d56
 +
 +}
 diff --git a/tests/src/Kernel/PowerBiEmbedFormatterTest.php b/tests/src/Kernel/PowerBiEmbedFormatterTest.php
-index 372d834..9c3a98a 100644
+index 372d834..197cc96 100644
 --- a/tests/src/Kernel/PowerBiEmbedFormatterTest.php
 +++ b/tests/src/Kernel/PowerBiEmbedFormatterTest.php
 @@ -65,13 +65,20 @@ class PowerBiEmbedFormatterTest extends KernelTestBase {
@@ -541,7 +554,7 @@ index 372d834..9c3a98a 100644
 +    // Field contains the correct cache — including the pwbi.settings config tag
 +    // added so that admin setting changes immediately invalidate cached renders.
 +    $cache = $build['embed']['#cache'];
-+    $this->assertSame(300, $cache['max-age']);
++    $this->assertSame(0, $cache['max-age']);
 +    $this->assertContains('pwbi_embed', $cache['tags']);
 +    $this->assertContains('config:pwbi.settings', $cache['tags']);
 +    $this->assertContains('user.permissions', $cache['contexts']);
@@ -578,15 +591,15 @@ index 372d834..9c3a98a 100644
 +  }
 +
 +  /**
-+   * Cache max-age equals the full token lifetime when token refresh is on.
++   * Cache max-age is 0 whatever the token lifetime.
 +   *
-+   * The JS handles in-place token refresh via setAccessToken(), so the render
-+   * cache does not need to be artificially shortened — it should live for the
-+   * full duration of the token regardless of whether refresh is enabled.
++   * A parent (node) cached while the embed is still cached replays the embed's
++   * stored relative lifetime, so any max-age above 0 can serve a dead token.
++   * Core does not store elements with max-age 0, and 0 bubbles up to parents.
 +   *
 +   * @covers ::viewElements
 +   */
-+  public function testCacheMaxAgeEqualsFullTokenLifetimeWhenRefreshEnabled(): void {
++  public function testCacheMaxAgeIsZeroWhateverTheTokenLifetime(): void {
 +    \Drupal::configFactory()
 +      ->getEditable('pwbi.settings')
 +      ->set('token_refresh_enabled', TRUE)
@@ -597,7 +610,7 @@ index 372d834..9c3a98a 100644
 +    $renderer = \Drupal::service('renderer');
 +    $renderer->renderInIsolation($build['embed']);
 +
-+    $this->assertSame(1200, $build['embed']['#cache']['max-age']);
++    $this->assertSame(0, $build['embed']['#cache']['max-age']);
    }
  
  }
@@ -738,6 +751,344 @@ index 0000000..ff28463
 +    $target = sys_get_temp_dir() . '/pwbi_settings_cert.pem';
 +    file_put_contents($target, file_get_contents($source));
 +    return $target;
++  }
++
++}
+diff --git a/tests/src/Unit/DenyPowerBiEmbedPagesTest.php b/tests/src/Unit/DenyPowerBiEmbedPagesTest.php
+new file mode 100644
+index 0000000..1498eee
+--- /dev/null
++++ b/tests/src/Unit/DenyPowerBiEmbedPagesTest.php
+@@ -0,0 +1,58 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Drupal\Tests\pwbi\Unit;
++
++use Drupal\Core\Cache\CacheableMetadata;
++use Drupal\Core\Cache\CacheableResponse;
++use Drupal\Core\PageCache\ResponsePolicyInterface;
++use Drupal\pwbi\PageCache\DenyPowerBiEmbedPages;
++use Drupal\Tests\UnitTestCase;
++use Symfony\Component\Yaml\Yaml;
++use Symfony\Component\HttpFoundation\Request;
++use Symfony\Component\HttpFoundation\Response;
++
++/**
++ * Tests the page cache policy for pages with a Power BI embed.
++ *
++ * @coversDefaultClass \Drupal\pwbi\PageCache\DenyPowerBiEmbedPages
++ * @group pwbi
++ */
++class DenyPowerBiEmbedPagesTest extends UnitTestCase {
++
++  /**
++   * A page carrying the pwbi_embed cache tag is kept out of the page cache.
++   */
++  public function testDeniesPagesWithAnEmbed(): void {
++    $response = new CacheableResponse('page');
++    $response->addCacheableDependency((new CacheableMetadata())->setCacheTags(['node:1', 'pwbi_embed']));
++
++    $this->assertSame(ResponsePolicyInterface::DENY, (new DenyPowerBiEmbedPages())->check($response, new Request()));
++  }
++
++  /**
++   * Other pages are left to the other policies.
++   */
++  public function testIgnoresOtherPages(): void {
++    $policy = new DenyPowerBiEmbedPages();
++    $tagged = new CacheableResponse('page');
++    $tagged->addCacheableDependency((new CacheableMetadata())->setCacheTags(['node:1']));
++
++    $this->assertNull($policy->check($tagged, new Request()));
++    $this->assertNull($policy->check(new Response('plain'), new Request()));
++  }
++
++
++  /**
++   * The policy is registered for both page caches, like the kill switch.
++   */
++  public function testRegisteredForBothPageCaches(): void {
++    $services = Yaml::parseFile(dirname(__DIR__, 3) . '/pwbi.services.yml')['services'];
++    $tags = array_column($services['pwbi.page_cache_response_policy.deny_embeds']['tags'], 'name');
++
++    $this->assertContains('page_cache_response_policy', $tags);
++    $this->assertContains('dynamic_page_cache_response_policy', $tags);
++  }
++
++}
+diff --git a/tests/src/Unit/PowerBiEmbedFormatterCacheTest.php b/tests/src/Unit/PowerBiEmbedFormatterCacheTest.php
+new file mode 100644
+index 0000000..8272b7d
+--- /dev/null
++++ b/tests/src/Unit/PowerBiEmbedFormatterCacheTest.php
+@@ -0,0 +1,115 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Drupal\Tests\pwbi\Unit;
++
++use Drupal\breakpoint\BreakpointManager;
++use Drupal\Component\Datetime\TimeInterface;
++use Drupal\Core\Config\ConfigFactoryInterface;
++use Drupal\Core\Config\ImmutableConfig;
++use Drupal\Core\Field\FieldDefinitionInterface;
++use Drupal\Core\Field\FieldItemList;
++use Drupal\pwbi\Plugin\Field\FieldFormatter\PowerBiEmbedFormatter;
++use Drupal\pwbi\Plugin\Field\FieldType\PowerBiEmbedField;
++use Drupal\pwbi\PowerBiEmbed;
++use Drupal\Tests\UnitTestCase;
++use Symfony\Component\EventDispatcher\EventDispatcher;
++
++/**
++ * Tests the cache metadata of the Power BI embed formatter.
++ *
++ * All report, workspace and token values below are synthetic (invented for
++ * these tests).
++ *
++ * @coversDefaultClass \Drupal\pwbi\Plugin\Field\FieldFormatter\PowerBiEmbedFormatter
++ * @group pwbi
++ */
++class PowerBiEmbedFormatterCacheTest extends UnitTestCase {
++
++  /**
++   * Runs the formatter on one item, with the Power BI API returning a result.
++   *
++   * @param array<string, mixed> $api_result
++   *   What PowerBiEmbed::getEmbedDataFromApi() returns.
++   *
++   * @return array<int|string, mixed>
++   *   The render array of the formatter.
++   */
++  private function viewElements(array $api_result): array {
++    $item = $this->createStub(PowerBiEmbedField::class);
++    $item->method('getValue')->willReturn([
++      // Synthetic ids.
++      'report_id' => '00000000-0000-4000-8000-000000000001',
++      'workspace_id' => '00000000-0000-4000-8000-000000000002',
++      'report_breakpoints_height' => serialize([]),
++      'report_width' => '100',
++      'report_width_units' => '%',
++      'report_height_units' => 'px',
++      'report_layout' => '3',
++      'token_type' => 'Embed',
++      'embed_type' => 'report',
++    ]);
++    $items = $this->createStub(FieldItemList::class);
++    $items->method('getIterator')->willReturn(new \ArrayIterator([$item]));
++
++    $pwbi_embed = $this->createStub(PowerBiEmbed::class);
++    $pwbi_embed->method('getEmbedDataFromApi')->willReturn($api_result);
++    $breakpoints = $this->createStub(BreakpointManager::class);
++    $breakpoints->method('getBreakpointsByGroup')->willReturn([]);
++    $settings = $this->createStub(ImmutableConfig::class);
++    $settings->method('getCacheTags')->willReturn(['config:pwbi.settings']);
++    $config_factory = $this->createStub(ConfigFactoryInterface::class);
++    $config_factory->method('get')->willReturn($settings);
++
++    $formatter = new PowerBiEmbedFormatter(
++      'pwbi_embed_formatter',
++      [],
++      $this->createStub(FieldDefinitionInterface::class),
++      [],
++      'hidden',
++      'default',
++      [],
++      $pwbi_embed,
++      $breakpoints,
++      new EventDispatcher(),
++      $this->createStub(TimeInterface::class),
++      $config_factory,
++    );
++
++    return $formatter->viewElements($items, 'en');
++  }
++
++  /**
++   * A valid token does not make the embed element cacheable.
++   *
++   * @covers ::viewElements
++   */
++  public function testEmbedElementIsNeverRenderCached(): void {
++    $element = $this->viewElements([
++      'pageName' => 'synthetic-page',
++      'visualName' => 'Synthetic page',
++      'embedUrl' => 'https://embed.invalid/synthetic',
++      'accessToken' => 'synthetic-embed-token',
++      'tokenExpirationDate' => gmdate('Y-m-d\TH:i:s\Z', time() + 1200),
++      'datasetId' => '00000000-0000-4000-8000-000000000003',
++    ]);
++
++    $this->assertSame(0, $element[0]['#cache']['max-age']);
++    $this->assertContains('pwbi_embed', $element[0]['#cache']['tags']);
++  }
++
++  /**
++   * A failed API call makes the page uncacheable and keeps the pwbi_embed tag.
++   *
++   * @covers ::viewElements
++   */
++  public function testFailedBuildIsUncacheableAndKeepsTheTag(): void {
++    $element = $this->viewElements([]);
++
++    $cache = $element['#cache'] ?? [];
++    $this->assertSame(0, $cache['max-age'] ?? NULL);
++    $this->assertContains('pwbi_embed', $cache['tags'] ?? []);
++  }
++
++}
+diff --git a/tests/src/Unit/PwbiServicePrincipalTest.php b/tests/src/Unit/PwbiServicePrincipalTest.php
+new file mode 100644
+index 0000000..da56415
+--- /dev/null
++++ b/tests/src/Unit/PwbiServicePrincipalTest.php
+@@ -0,0 +1,147 @@
++<?php
++
++declare(strict_types=1);
++
++namespace Drupal\Tests\pwbi\Unit;
++
++use Drupal\Core\Config\ConfigFactoryInterface;
++use Drupal\Core\Logger\LoggerChannelFactoryInterface;
++use Drupal\Core\Logger\LoggerChannelInterface;
++use Drupal\Core\Messenger\MessengerInterface;
++use Drupal\Core\State\StateInterface;
++use Drupal\oauth2_client\Plugin\Oauth2GrantType\Oauth2GrantTypeInterface;
++use Drupal\oauth2_client\PluginManager\Oauth2GrantTypePluginManager;
++use Drupal\oauth2_client\Service\CredentialProvider;
++use Drupal\pwbi\Plugin\Oauth2Client\PwbiServicePrincipal;
++use Drupal\Tests\UnitTestCase;
++use League\OAuth2\Client\Token\AccessToken;
++use PHPUnit\Framework\MockObject\MockObject;
++use Symfony\Component\DependencyInjection\ContainerBuilder;
++
++/**
++ * Tests that the service principal renews its login token before it expires.
++ *
++ * All token values below are synthetic (invented for these tests).
++ *
++ * @coversDefaultClass \Drupal\pwbi\Plugin\Oauth2Client\PwbiServicePrincipal
++ * @group pwbi
++ */
++class PwbiServicePrincipalTest extends UnitTestCase {
++
++  private const STATE_KEY = 'oauth2_client_access_token-pwbi_service_principal';
++
++  /**
++   * The grant type the plugin asks for new tokens.
++   */
++  private Oauth2GrantTypeInterface&MockObject $grant;
++
++  /**
++   * The state the plugin keeps its token in.
++   */
++  private StateInterface&MockObject $state;
++
++  /**
++   * The plugin under test.
++   */
++  private PwbiServicePrincipal $plugin;
++
++  /**
++   * {@inheritdoc}
++   */
++  protected function setUp(): void {
++    parent::setUp();
++    $this->grant = $this->createMock(Oauth2GrantTypeInterface::class);
++    $this->state = $this->createMock(StateInterface::class);
++    $manager = $this->createStub(Oauth2GrantTypePluginManager::class);
++    $manager->method('createInstance')->willReturn($this->grant);
++    $this->plugin = new PwbiServicePrincipal(
++      [],
++      'pwbi_service_principal',
++      ['id' => 'pwbi_service_principal', 'grant_type' => 'service_principal'],
++      $this->createStub(MessengerInterface::class),
++      $manager,
++      $this->createStub(ConfigFactoryInterface::class),
++      $this->createStub(CredentialProvider::class),
++      $this->state,
++    );
++  }
++
++  /**
++   * Builds a synthetic token that expires in the given number of seconds.
++   */
++  private function token(string $value, int $seconds): AccessToken {
++    return new AccessToken(['access_token' => $value, 'expires' => time() + $seconds]);
++  }
++
++  /**
++   * A token with 9 minutes left is replaced by a new one.
++   *
++   * @covers ::getAccessToken
++   */
++  public function testRenewsTokenInsideTheMargin(): void {
++    $stored = $this->token('synthetic-stored-token', 9 * 60);
++    $renewed = $this->token('synthetic-renewed-token', 60 * 60);
++    $this->state->method('get')->willReturn($stored);
++    $this->grant->expects($this->once())
++      ->method('getAccessToken')
++      ->with($this->identicalTo($this->plugin))
++      ->willReturn($renewed);
++    $this->state->expects($this->once())
++      ->method('set')
++      ->with(self::STATE_KEY, $this->identicalTo($renewed));
++
++    $this->assertSame($renewed, $this->plugin->getAccessToken());
++  }
++
++  /**
++   * A token with 11 minutes left is returned as it is, with no new request.
++   *
++   * @covers ::getAccessToken
++   */
++  public function testKeepsTokenOutsideTheMargin(): void {
++    $stored = $this->token('synthetic-stored-token', 11 * 60);
++    $this->state->method('get')->willReturn($stored);
++    $this->grant->expects($this->never())->method('getAccessToken');
++    $this->state->expects($this->never())->method('set');
++
++    $this->assertSame($stored, $this->plugin->getAccessToken());
++  }
++
++  /**
++   * A failed early renewal keeps the stored token while it is still valid.
++   *
++   * @covers ::getAccessToken
++   */
++  public function testKeepsStoredTokenWhenEarlyRenewalFails(): void {
++    $stored = $this->token('synthetic-stored-token', 9 * 60);
++    $this->state->method('get')->willReturn($stored);
++    $this->grant->expects($this->once())->method('getAccessToken')->willReturn(NULL);
++    $this->state->expects($this->never())->method('set');
++
++    $this->assertSame($stored, $this->plugin->getAccessToken());
++  }
++
++  /**
++   * A grant that throws during the early renewal keeps the stored token.
++   *
++   * @covers ::getAccessToken
++   */
++  public function testKeepsStoredTokenWhenEarlyRenewalThrows(): void {
++    // The plugin logs through \Drupal::logger(), so it needs a container.
++    $logger_factory = $this->createStub(LoggerChannelFactoryInterface::class);
++    $logger_factory->method('get')->willReturn($this->createStub(LoggerChannelInterface::class));
++    $container = new ContainerBuilder();
++    $container->set('logger.factory', $logger_factory);
++    \Drupal::setContainer($container);
++
++    $stored = $this->token('synthetic-stored-token', 9 * 60);
++    $this->state->method('get')->willReturn($stored);
++    $this->grant->expects($this->once())
++      ->method('getAccessToken')
++      ->willThrowException(new \RuntimeException('synthetic grant failure'));
++    $this->state->expects($this->never())->method('set');
++
++    $this->assertSame($stored, $this->plugin->getAccessToken());
 +  }
 +
 +}

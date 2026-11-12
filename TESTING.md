@@ -12,6 +12,8 @@ This patch adds the following features to the `pwbi` Drupal module:
 
 ## Files Changed
 
+`patches/pwbi-combined.patch` is the patch a site applies. It holds the module code only. The tests are in `patches/pwbi-tests.patch`, which applies on top of it and is only needed to run PHPUnit. The `pwbi_purge` submodule is no longer in either patch: the dashboard is never cached, so there is nothing for it to purge. A site that has `pwbi_purge` enabled must uninstall it before taking this patch.
+
 | File | Change |
 |------|--------|
 | `src/Api/PowerBiClient.php` | Dynamic endpoint via Config API; `getApiRoot()` method replaces 8 hardcoded constants |
@@ -28,9 +30,9 @@ This patch adds the following features to the `pwbi` Drupal module:
 | `pwbi.permissions.yml` | Adds `view pwbi embed token` permission for the refresh endpoint |
 | `pwbi.routing.yml` | Adds `/pwbi/token-refresh/{workspace_id}/{report_id}` route |
 | `src/PageCache/DenyPowerBiEmbedPages.php` + `pwbi.services.yml` | **New** -- page cache response policy, registered for the internal page cache and the dynamic page cache (the same two caches as core's kill switch): pages tagged `pwbi_embed` are never stored in either. The internal page cache ignores max-age and would serve an expired token. The embed element itself is not render-cached |
-| `tests/src/Unit/DenyPowerBiEmbedPagesTest.php` | **New** -- unit test for the policy |
-| `tests/src/Unit/PwbiServicePrincipalTest.php` | **New** -- unit tests for the early login-token renewal |
-| `tests/src/Unit/PowerBiEmbedFormatterCacheTest.php` | **New** -- unit tests for the embed element's cache settings |
+| `tests/src/Unit/DenyPowerBiEmbedPagesTest.php` | **New** -- unit test for the policy (in `pwbi-tests.patch`) |
+| `tests/src/Unit/PwbiServicePrincipalTest.php` | **New** -- unit tests for the early login-token renewal (in `pwbi-tests.patch`) |
+| `tests/src/Unit/PowerBiEmbedFormatterCacheTest.php` | **New** -- unit tests for the embed element's cache settings (in `pwbi-tests.patch`) |
 
 ---
 
