@@ -42,8 +42,17 @@ fetch(location.href, {cache: 'no-store', credentials: 'same-origin'}).then(async
 Replace the URL with the dashboard page. Run it twice, a few seconds apart.
 
 ```bash
-curl -s -D - -o /tmp/pwbi-page.html "https://QA-SITE/DASHBOARD-PAGE" | grep -i -E 'x-drupal|^age:|cache-control|expires|^date:|via|etag'; grep -o '"tokenExpirationDate":"[^"]*"' /tmp/pwbi-page.html
+curl -s -D - -o /tmp/pwbi-page.html "https://QA-SITE/DASHBOARD-PAGE" | grep -i -E 'x-drupal|x-cache|x-azure-ref|^age:|cache-control|expires|^date:|via|etag'; grep -o '"tokenExpirationDate":"[^"]*"' /tmp/pwbi-page.html
 ```
+
+Reading the `X-Cache` header, which Azure Front Door adds ([Microsoft: Front Door caching](https://learn.microsoft.com/en-us/azure/frontdoor/front-door-caching)):
+
+- `TCP_HIT` or `TCP_REMOTE_HIT`: Front Door served the page from its own cache. Drupal was not asked.
+- `TCP_MISS`: Front Door fetched the page from Drupal, and may now store it.
+- `PRIVATE_NOSTORE`: Front Door did not store the page because Drupal marked it `private` or `no-store`.
+- `CONFIG_NOCACHE`: caching is switched off for this route in Front Door.
+
+A dashboard page should show `PRIVATE_NOSTORE` or `CONFIG_NOCACHE`. `TCP_HIT` with an expired token means Front Door is holding an old copy: purge that path in Front Door, then run the check again twice.
 
 ## 4. Is the page-cache rule deployed? (on the QA server)
 
